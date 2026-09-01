@@ -1,0 +1,36 @@
+[project]
+name = "memgit"
+version = "0.1.0"
+description = "Version control and time-travel debugging for AI agent memory"
+authors = [
+    { name = "Sebastian Cheung", email = "sebcheung64@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "typer>=0.15.0",
+]
+
+[project.optional-dependencies]
+agent = [
+    "anthropic>=0.69.0",
+]
+
+[project.scripts]
+memgit = "memgit.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "memgit"
+module-root = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
