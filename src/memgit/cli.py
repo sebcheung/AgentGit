@@ -9,13 +9,16 @@ from pathlib import Path
 import typer
 
 from memgit import __version__
+from memgit.core.commit import Commit
 from memgit.core.fact import Fact
-from memgit.core.store import (
-    CorruptObjectError,
-    ObjectNotFoundError,
-    ObjectStore,
-    hash_object,
+from memgit.core.repository import (
+    EmptyCommitError,
+    NotARepositoryError,
+    Repository,
+    RepositoryExistsError,
+    RevisionNotFoundError,
 )
+from memgit.core.store import CorruptObjectError, ObjectNotFoundError, hash_object
 
 app = typer.Typer(
     name="memgit",
@@ -23,8 +26,6 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
-
-MEMGIT_DIR = ".memgit"
 
 
 def _version_callback(value: bool) -> None:
@@ -47,28 +48,214 @@ def main(
     """MemGit — git for what your agent believes."""
 
 
-def _find_repo(start: Path | None = None) -> Path:
-    """Walk upward looking for a ``.memgit`` directory, like git does.
-
-    Searching ancestors rather than requiring the exact directory means
-    commands work from anywhere inside a project, which is the behaviour
-    anyone who has used git already expects.
-    """
-    current = (start or Path.cwd()).resolve()
-    for candidate in [current, *current.parents]:
-        if (candidate / MEMGIT_DIR).is_dir():
-            return candidate / MEMGIT_DIR
-    typer.secho(
-        "not a memgit repository (no .memgit directory found in this "
-        "directory or any parent)",
-        fg=typer.colors.RED,
-        err=True,
-    )
+def _fail(message: str) -> None:
+    typer.secho(message, fg=typer.colors.RED, err=True)
     raise typer.Exit(code=1)
 
 
-def _store() -> ObjectStore:
-    return ObjectStore(_find_repo() / "objects")
+def _repo() -> Repository:
+    """Discover the current repository, or exit with an error.
+
+    All discovery and validation logic lives on ``Repository`` itself and
+    raises plain exceptions — this function is the one place that translates
+    those into the CLI's exit-code convention, so the same core code stays
+    reusable from the FastAPI layer and the MCP server later without either
+    one depending on typer.
+    """
+    try:
+        return Repository.discover()
+    except NotARepositoryError as exc:
+        _fail(str(exc))
+        raise  # unreachable; satisfies type checkers
+
+
+def _load_facts(file: str | None) -> list[Fact]:
+    """Read a JSON array of fact dicts from ``file``, or stdin if ``file`` is ``-``."""
+    if file is None or file == "-":
+        if file is None and sys.stdin.isatty():
+            _fail("provide --file PATH, or pipe a JSON array of facts on stdin")
+        raw = sys.stdin.read()
+    else:
+        try:
+            raw = Path(file).read_text(encoding="utf-8")
+        except OSError as exc:
+            _fail(f"could not read {file}: {exc}")
+
+    try:
+        payloads = json.loads(raw)
+    except ValueError as exc:
+        _fail(f"not valid JSON: {exc}")
+
+    if not isinstance(payloads, list):
+        _fail("expected a JSON array of facts")
+
+    try:
+        return [Fact.from_dict(p) for p in payloads]
+    except (TypeError, ValueError) as exc:
+        _fail(str(exc))
+        raise  # unreachable
+
+
+def _format_commit_oneline(commit_hash: str, commit: Commit) -> str:
+    return f"{commit_hash[:8]} {commit.summary}"
+
+
+@app.command("init")
+def init_cmd(
+    path: str = typer.Argument(".", help="Where to create the repository."),
+) -> None:
+    """Create a new, empty repository. Mirrors ``git init``."""
+    try:
+        repo = Repository.init(path)
+    except RepositoryExistsError as exc:
+        _fail(str(exc))
+        return
+    typer.echo(f"Initialized empty MemGit repository in {repo.memgit_dir}")
+
+
+@app.command("commit")
+def commit_cmd(
+    message: str = typer.Option(..., "-m", "--message", help="Commit message."),
+    file: str = typer.Option(
+        None, "--file", "-f", help="JSON file of facts, or '-' for stdin."
+    ),
+    author: str = typer.Option("unknown", "--author", help="Who or what made this commit."),
+    allow_empty: bool = typer.Option(
+        False, "--allow-empty", help="Permit a commit identical to its parent."
+    ),
+) -> None:
+    """Record the given facts as a new commit. Mirrors ``git commit``."""
+    repo = _repo()
+    facts = _load_facts(file)
+    try:
+        commit_hash = repo.commit(facts, message, author=author, allow_empty=allow_empty)
+    except EmptyCommitError as exc:
+        _fail(str(exc))
+        return
+    typer.echo(commit_hash)
+
+
+@app.command("log")
+def log_cmd(
+    rev: str = typer.Argument("HEAD", help="Revision to start from."),
+    limit: int = typer.Option(None, "-n", "--limit", help="Show at most this many commits."),
+    oneline: bool = typer.Option(False, "--oneline", help="One line per commit."),
+) -> None:
+    """Walk history from ``rev``, most-recent-first. Mirrors ``git log``."""
+    repo = _repo()
+    try:
+        commits = list(repo.log(rev, limit=limit))
+    except RevisionNotFoundError as exc:
+        _fail(f"unknown revision: {exc}")
+        return
+
+    for commit in commits:
+        if oneline:
+            typer.echo(_format_commit_oneline(commit.hash, commit))
+        else:
+            typer.echo(f"commit {commit.hash}")
+            if commit.parents:
+                typer.echo(f"parents: {' '.join(commit.parents)}")
+            typer.echo(f"author:  {commit.author}")
+            typer.echo(f"date:    {commit.committed_at}")
+            typer.echo(f"\n    {commit.message}\n")
+
+
+@app.command("show")
+def show_cmd(rev: str = typer.Argument("HEAD", help="Revision to show.")) -> None:
+    """Show a commit's metadata and the facts in its tree. Mirrors ``git show``."""
+    repo = _repo()
+    try:
+        commit_hash = repo.resolve(rev)
+        commit = repo.read_commit(commit_hash)
+        tree = repo.read_tree(commit_hash)
+    except RevisionNotFoundError as exc:
+        _fail(f"unknown revision: {exc}")
+        return
+    except (ObjectNotFoundError, CorruptObjectError) as exc:
+        _fail(str(exc))
+        return
+
+    typer.echo(f"commit {commit_hash}")
+    typer.echo(f"author: {commit.author}")
+    typer.echo(f"date:   {commit.committed_at}")
+    typer.echo(f"\n    {commit.message}\n")
+    for fact in tree.load(repo.store):
+        typer.echo(f"  {fact}")
+
+
+@app.command("ls-tree")
+def ls_tree_cmd(rev: str = typer.Argument("HEAD", help="Revision whose tree to list.")) -> None:
+    """List a tree's entries. Mirrors ``git ls-tree``."""
+    repo = _repo()
+    try:
+        tree = repo.read_tree(rev)
+    except RevisionNotFoundError as exc:
+        _fail(f"unknown revision: {exc}")
+        return
+    except (ObjectNotFoundError, CorruptObjectError) as exc:
+        _fail(str(exc))
+        return
+
+    for subject, predicate, hashes in tree:
+        for h in hashes:
+            typer.echo(f"{subject}\t{predicate}\t{h}")
+
+
+@app.command("branch")
+def branch_cmd(
+    name: str = typer.Argument(None, help="Branch to create."),
+    at: str = typer.Option("HEAD", "--at", help="Revision the new branch should point at."),
+    delete: str = typer.Option(None, "-d", "--delete", help="Branch to delete."),
+) -> None:
+    """List, create, or delete branches. Mirrors ``git branch``."""
+    repo = _repo()
+
+    if delete is not None:
+        try:
+            repo.delete_branch(delete)
+        except ValueError as exc:
+            _fail(str(exc))
+        return
+
+    if name is not None:
+        try:
+            repo.create_branch(name, at=at)
+        except (RevisionNotFoundError, ValueError) as exc:
+            _fail(str(exc))
+        return
+
+    current = repo.current_branch()
+    for branch_name in sorted(repo.branches()):
+        marker = "*" if branch_name == current else " "
+        typer.echo(f"{marker} {branch_name}")
+
+
+@app.command("rev-parse")
+def rev_parse_cmd(rev: str = typer.Argument(..., help="Revision to resolve.")) -> None:
+    """Resolve a revision string to a commit hash. Mirrors ``git rev-parse``."""
+    repo = _repo()
+    try:
+        typer.echo(repo.resolve(rev))
+    except RevisionNotFoundError as exc:
+        _fail(f"unknown revision: {exc}")
+
+
+@app.command("status")
+def status_cmd() -> None:
+    """Show the current branch, HEAD, and fact count."""
+    repo = _repo()
+    head = repo.head()
+    if head.is_detached:
+        typer.echo(f"HEAD detached at {head.commit}")
+    else:
+        typer.echo(f"On branch {head.branch}")
+        if head.commit is None:
+            typer.echo("No commits yet")
+
+    if head.commit is not None:
+        tree = repo.read_tree(head.commit)
+        typer.echo(f"{len(tree)} key(s), {len(tree.fact_hashes())} fact(s)")
 
 
 @app.command("hash-object")
@@ -125,7 +312,7 @@ def hash_object_cmd(
             typer.secho(f"stdin is not valid JSON: {exc}", fg=typer.colors.RED, err=True)
             raise typer.Exit(code=1)
 
-    typer.echo(_store().put(payload) if write else hash_object(payload))
+    typer.echo(_repo().store.put(payload) if write else hash_object(payload))
 
 
 @app.command("cat-file")
@@ -142,7 +329,7 @@ def cat_file_cmd(
     or damaged.
     """
     try:
-        payload = _store().get(obj_hash)
+        payload = _repo().store.get(obj_hash)
     except ObjectNotFoundError:
         typer.secho(f"object not found: {obj_hash}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
@@ -163,7 +350,7 @@ def fsck_cmd() -> None:
     The offline equivalent of ``git fsck`` for the object database. Also prints
     the storage-efficiency numbers the README quotes.
     """
-    store = _store()
+    store = _repo().store
     broken = store.verify()
 
     count = store.count()

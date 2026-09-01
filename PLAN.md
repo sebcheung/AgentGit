@@ -117,8 +117,8 @@ increment, tested before moving on:
 |---|---|---|
 | 0. Skeleton | — | ✅ |
 | 1. Fact + CAS | 1, 2 | ✅ |
-| 2. Commit graph | 3 | ← next |
-| 3. Diff engine | 4 | |
+| 2. Commit graph | 3 | ✅ |
+| 3. Diff engine | 4 | ← next |
 | 4. Checkout / rewind | 5 | |
 | 5. Agent runtime | 6 | |
 | 6. Replay / ablation | 7 | |
@@ -144,6 +144,10 @@ Design choices already made and built on, not up for re-litigation without a rea
 | Fact schema | Strict `(subject, predicate, object)` + metadata + `source_text` | `(subject, predicate)` is the diff key; SHA-256 of canonical JSON is the CAS key. Free-form NL would make the diff fuzzy and untestable, which kills the core selling point. |
 | Object store | Filesystem CAS, git-identical layout | `.memgit/objects/ab/cdef…`, `refs/heads/*`, `HEAD`. Max learning value; the on-disk layout can sit next to a real `.git`. SQLite/Postgres is added later *only* for the commit-graph metadata and eval results, not for slices 1-3. |
 | Fact creation | Agent calls `remember(...)` deliberately as a tool | Structured at birth — no extraction step, no parsing noise. Same shape the MCP server needs, so the agent runtime and MCP server share code. Honest caveat: the agent only remembers what it decides to remember. |
+| Tree shape | One flat, sorted `Tree` object per commit, not a subject-sharded two-level tree | Sharding (subject as git's "directory") only lowers a constant factor — the root tree is still rewritten every commit, so the asymptotics don't change — and it costs a recursive walk in the diff engine, the project's core intellectual work. Reversible: the entry encoding stays private behind `Tree`'s API, and `.memgit/config` carries a `format_version`. |
+| Tree entry cardinality | One `(subject, predicate)` key maps to a *list* of fact hashes, not one | Keeps `(subject, predicate)` the single diff key exactly as `fact.py` promises, and leaves "is a second value an addition or a contradiction" as a pure diff-engine interpretation rule (slice 3's cardinality map) instead of baking an ontology into storage. |
+| Staging / index | No `.memgit/index`; `Repository.commit()` takes the whole fact set | Git's index solves selective staging and a stat cache, neither of which applies to an agent turn (all-or-nothing, facts already in memory). An index is also mutable, uncommitted, unhashed state — exactly the one thing this project's premise says should always be diffable and reversible. When slice 5 needs staging across two process invocations, the answer is a ref holding a tree hash, not git's binary index. |
+| Checkout / rewind | Its own slice (4), after the diff engine (3), not bundled into the commit graph | Materializing a past state is easiest to get right once the diff engine has already forced a decision about what a tree entry means at a given key. |
 | LLM | Anthropic API, `claude-opus-5`, Python SDK | |
 
 ---
@@ -191,7 +195,10 @@ To keep this a focused, finishable summer project rather than an open-ended syst
 
 - Package lives in `src/memgit/`. Core is import-clean: `memgit.core.*` never
   touches the network, so slices 1-3 test fast and offline.
-- Tests in `tests/`, one module per core module.
+- Tests in `tests/`, one module per core module — with one deliberate
+  exception: `tests/test_cli.py` covers `cli.py`, since the CLI is the only
+  place a core exception becomes an exit code, and that translation needs its
+  own coverage rather than being assumed from the core modules' tests.
 
 ## Development environment
 
