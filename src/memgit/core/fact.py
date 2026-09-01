@@ -123,9 +123,24 @@ class Fact:
             payload["source_text"] = self.source_text
         return payload
 
+    _FIELDS = frozenset(
+        {"type", "subject", "predicate", "object", "confidence", "asserted_at", "source", "source_text"}
+    )
+
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> Fact:
-        """Rebuild a fact from :meth:`to_dict` output."""
+        """Rebuild a fact from :meth:`to_dict` output.
+
+        Strict about shape: an unknown key is rejected rather than silently
+        dropped. Tolerating unrecognized fields would mean
+        ``Fact.from_dict(store.get(h)).hash != h`` is reachable for a payload
+        carrying one — a round-trip violation in a system whose entire premise
+        is that a hash describes everything filed under it.
+        """
+        unknown = payload.keys() - cls._FIELDS
+        if unknown:
+            raise ValueError(f"fact payload has unknown keys: {sorted(unknown)}")
+
         kind = payload.get("type")
         if kind != "fact":
             raise ValueError(f"expected a fact object, got type={kind!r}")

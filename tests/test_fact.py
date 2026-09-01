@@ -202,6 +202,14 @@ class TestFactSerialization:
         with pytest.raises(ValueError, match="expected a fact"):
             Fact.from_dict({"type": "commit", "subject": "x"})
 
+    def test_from_dict_rejects_unknown_keys(self):
+        """An unrecognized field must not silently round-trip: it would make
+        Fact.from_dict(store.get(h)).hash != h reachable."""
+        payload = make_fact().to_dict()
+        payload["extra"] = "surprise"
+        with pytest.raises(ValueError, match="unknown keys"):
+            Fact.from_dict(payload)
+
 
 class TestReaffirm:
     def test_preserves_the_claim(self):
