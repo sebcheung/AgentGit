@@ -14,10 +14,12 @@ import pytest
 
 from memgit.core.fact import Fact
 from memgit.core.store import (
+    AmbiguousPrefixError,
     CorruptObjectError,
     ObjectNotFoundError,
     ObjectStore,
     hash_object,
+    is_object_hash,
 )
 
 
@@ -217,6 +219,64 @@ class TestIntrospection:
 
     def test_size_on_disk_of_an_empty_store_is_zero(self, store):
         assert store.size_on_disk() == 0
+
+
+class TestIsObjectHash:
+    @pytest.mark.parametrize("value", ["a" * 64, "0123456789abcdef" * 4, "F" * 64])
+    def test_accepts_64_hex_characters(self, value):
+        assert is_object_hash(value) is True
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "a" * 63,
+            "a" * 65,
+            "z" * 64,
+            "",
+            "../../etc/passwd",
+            12345,
+            None,
+        ],
+    )
+    def test_rejects_anything_else(self, value):
+        assert is_object_hash(value) is False
+
+
+class TestResolvePrefix:
+    def test_resolves_a_unique_prefix(self, store):
+        obj_hash = store.put({"a": 1})
+        assert store.resolve_prefix(obj_hash[:8]) == obj_hash
+
+    def test_a_full_hash_resolves_to_itself(self, store):
+        obj_hash = store.put({"a": 1})
+        assert store.resolve_prefix(obj_hash) == obj_hash
+
+    def test_raises_on_no_match(self, store):
+        store.put({"a": 1})
+        with pytest.raises(ObjectNotFoundError):
+            store.resolve_prefix("deadbeef")
+
+    def test_raises_on_full_hash_with_no_match(self, store):
+        with pytest.raises(ObjectNotFoundError):
+            store.resolve_prefix("a" * 64)
+
+    def test_raises_on_ambiguous_prefix(self, store, monkeypatch):
+        """Two objects sharing a prefix is astronomically unlikely with real
+        hashes, so the ambiguity path is tested by monkeypatching iter_hashes
+        rather than trying to mine a SHA-256 collision."""
+        obj_hash = store.put({"a": 1})
+        other = obj_hash[:8] + ("0" if obj_hash[8] != "0" else "1") + obj_hash[9:]
+        monkeypatch.setattr(store, "iter_hashes", lambda: iter([obj_hash, other]))
+        with pytest.raises(AmbiguousPrefixError):
+            store.resolve_prefix(obj_hash[:8])
+
+    def test_rejects_prefix_shorter_than_min_len(self, store):
+        with pytest.raises(ValueError, match="at least"):
+            store.resolve_prefix("abc")
+
+    def test_rejects_non_hex_prefix(self, store):
+        with pytest.raises(ValueError, match="hexadecimal"):
+            store.resolve_prefix("zzzz")
 
 
 class TestHashObject:

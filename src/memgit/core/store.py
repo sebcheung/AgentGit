@@ -37,7 +37,13 @@ from typing import Any, Iterator
 
 from memgit.core.canonical import canonical_json, hash_payload
 
-__all__ = ["ObjectStore", "CorruptObjectError", "ObjectNotFoundError"]
+__all__ = [
+    "ObjectStore",
+    "CorruptObjectError",
+    "ObjectNotFoundError",
+    "AmbiguousPrefixError",
+    "is_object_hash",
+]
 
 # Compression level 6 is zlib's default: a deliberate middle of the road on the
 # size/speed curve. Facts are tiny, so this is unlikely to ever be a bottleneck.
@@ -58,6 +64,28 @@ class CorruptObjectError(Exception):
     Either zlib could not decompress it, or the bytes decompressed fine but
     re-hashed to a different address than the one they were filed under.
     """
+
+
+class AmbiguousPrefixError(ValueError):
+    """Raised when a hash prefix matches more than one object in the store."""
+
+
+def is_object_hash(value: Any) -> bool:
+    """Whether ``value`` has the shape of a valid object hash: 64 hex characters.
+
+    Trees, commits, and refs will all hold hashes as opaque pointers into this
+    store — a hash string reaching the filesystem unchecked is a path-traversal
+    vector one hop removed (see ``ObjectStore._path_for``), so every module that
+    carries one applies this exact rule rather than a slightly different
+    reimplementation of it.
+    """
+    if not isinstance(value, str) or len(value) != 64:
+        return False
+    try:
+        int(value, 16)
+    except ValueError:
+        return False
+    return True
 
 
 class ObjectStore:
@@ -82,18 +110,18 @@ class ObjectStore:
         Rejecting anything that is not 64 hex characters means ``..`` and
         absolute paths can never get through.
         """
+        if is_object_hash(obj_hash):
+            return self.objects_dir / obj_hash[:_FANOUT] / obj_hash[_FANOUT:]
+
+        # Fell through validation — figure out which rule was broken so the
+        # error names it specifically, rather than reporting only "invalid".
         if not isinstance(obj_hash, str):
             raise TypeError(f"object hash must be a str, got {type(obj_hash).__name__}")
         if len(obj_hash) != 64:
             raise ValueError(
                 f"object hash must be 64 hex characters, got {len(obj_hash)}"
             )
-        try:
-            int(obj_hash, 16)
-        except ValueError as exc:
-            raise ValueError(f"object hash is not hexadecimal: {obj_hash!r}") from exc
-
-        return self.objects_dir / obj_hash[:_FANOUT] / obj_hash[_FANOUT:]
+        raise ValueError(f"object hash is not hexadecimal: {obj_hash!r}")
 
     # -- writing ---------------------------------------------------------
 
@@ -205,6 +233,43 @@ class ObjectStore:
         for obj_hash in self.iter_hashes():
             total += self._path_for(obj_hash).stat().st_size
         return total
+
+    def resolve_prefix(self, prefix: str, *, min_len: int = 4) -> str:
+        """Expand a short hex prefix to the one full hash it identifies.
+
+        The CLI's counterpart to ``git rev-parse`` accepting abbreviated SHAs:
+        typing 64 hex characters in every demo command is the kind of friction
+        that makes a tool feel unfinished, and the object store is exactly
+        where the ambiguity check belongs, since it is the only thing that
+        knows every hash that exists.
+
+        Raises:
+            ValueError: ``prefix`` is shorter than ``min_len`` or not hex.
+            ObjectNotFoundError: no stored object's hash starts with ``prefix``.
+            AmbiguousPrefixError: more than one does.
+        """
+        if len(prefix) < min_len:
+            raise ValueError(
+                f"prefix must be at least {min_len} characters, got {len(prefix)}"
+            )
+        try:
+            int(prefix, 16)
+        except ValueError as exc:
+            raise ValueError(f"prefix is not hexadecimal: {prefix!r}") from exc
+
+        if is_object_hash(prefix):
+            if self.contains(prefix):
+                return prefix
+            raise ObjectNotFoundError(prefix)
+
+        matches = [h for h in self.iter_hashes() if h.startswith(prefix)]
+        if not matches:
+            raise ObjectNotFoundError(prefix)
+        if len(matches) > 1:
+            raise AmbiguousPrefixError(
+                f"prefix {prefix!r} matches {len(matches)} objects"
+            )
+        return matches[0]
 
     def verify(self) -> list[str]:
         """Read every object and return the hashes of any that fail to verify.
