@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Claude Code working context — not project documentation, not committed
+CLAUDE.md
+
+# MemGit repositories created by tests, demos, and scratch work
+.memgit/
+**/.memgit/
+
+# Claude Code machine-local settings
+.claude/settings.local.json
