@@ -108,6 +108,44 @@ A git-inspired version control and time-travel debugging system for AI agent mem
 13. **Production hardening** — migrate metadata storage to Postgres with Alembic migrations, add Pydantic request/response validation, add API-key auth, add structured logging + retry logic on LLM calls, add a `/health` endpoint.
 14. **Deploy** — ship the API and MCP server to Fly.io/Render/a VPS, wire up GitHub Actions for test-and-deploy, and hook up basic uptime monitoring.
 
+### Build order, as vertical slices
+
+The 14 components above are grouped into slices — each one a working, demoable
+increment, tested before moving on:
+
+| Slice | Component(s) | Status |
+|---|---|---|
+| 0. Skeleton | — | ✅ |
+| 1. Fact + CAS | 1, 2 | ✅ |
+| 2. Commit graph | 3 | ← next |
+| 3. Diff engine | 4 | |
+| 4. Checkout / rewind | 5 | |
+| 5. Agent runtime | 6 | |
+| 6. Replay / ablation | 7 | |
+| 7. Retrieval + confidence decay | 8 + 9 (merged) | |
+| 8. MCP server | 10 (moved up — the tool-call fact-write decision makes this nearly the same code as slice 4) | |
+| 9. Eval suite | 11 | |
+| 10. FastAPI + dashboard | 12 | |
+| 11. Production hardening + deploy | 13 + 14 (merged) | |
+
+Checkout/rewind is deliberately its own slice (4), after the diff engine (3) rather
+than bundled into the commit graph (2): materializing a past state is easiest to get
+right once the diff engine has already forced a decision about what a tree entry
+means at a given key.
+
+---
+
+## Decisions locked in
+
+Design choices already made and built on, not up for re-litigation without a reason:
+
+| Decision | Choice | Why |
+|---|---|---|
+| Fact schema | Strict `(subject, predicate, object)` + metadata + `source_text` | `(subject, predicate)` is the diff key; SHA-256 of canonical JSON is the CAS key. Free-form NL would make the diff fuzzy and untestable, which kills the core selling point. |
+| Object store | Filesystem CAS, git-identical layout | `.memgit/objects/ab/cdef…`, `refs/heads/*`, `HEAD`. Max learning value; the on-disk layout can sit next to a real `.git`. SQLite/Postgres is added later *only* for the commit-graph metadata and eval results, not for slices 1-3. |
+| Fact creation | Agent calls `remember(...)` deliberately as a tool | Structured at birth — no extraction step, no parsing noise. Same shape the MCP server needs, so the agent runtime and MCP server share code. Honest caveat: the agent only remembers what it decides to remember. |
+| LLM | Anthropic API, `claude-opus-5`, Python SDK | |
+
 ---
 
 ## Metrics worth tracking (for your README and interview talking points)
@@ -146,3 +184,27 @@ To keep this a focused, finishable summer project rather than an open-ended syst
 - Semantic diffing of natural-language-derived facts is genuinely hard — you'll need to decide how facts get *extracted* from raw agent output (LLM-based extraction is easiest to start, but introduces its own noise/errors you should be upfront about).
 - Causal attribution via ablation is a real methodology, but it's not bulletproof — removing one fact can have downstream effects on other facts that reference it, so be honest about the limits of "removed X, output changed, therefore X caused it."
 - This is a debugging/observability tool, not a production memory system for a live product — scope it as such rather than overclaiming.
+
+---
+
+## Repo conventions
+
+- Package lives in `src/memgit/`. Core is import-clean: `memgit.core.*` never
+  touches the network, so slices 1-3 test fast and offline.
+- Tests in `tests/`, one module per core module.
+
+## Development environment
+
+- No `python` on PATH — use the `py` launcher, or `py -m uv run ...`.
+- `uv` is installed as a pip package, so it's `py -m uv`, not bare `uv`.
+- **The network does TLS interception.** Every `uv` command that touches the
+  index needs `--system-certs` or it fails with `invalid peer certificate:
+  UnknownIssuer`. e.g. `py -m uv sync --all-extras --system-certs`.
+
+## Commands
+
+```sh
+py -m uv sync --all-extras --system-certs   # install/refresh deps
+py -m uv run pytest                          # test
+py -m uv run memgit --help                   # CLI
+```
