@@ -25,61 +25,16 @@ strengthened rather than silently collapsing it into the old one.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
 from typing import Any
+
+from memgit.core.canonical import canonical_json, hash_payload, utcnow
 
 __all__ = ["Fact", "FactKey", "canonical_json", "hash_payload"]
 
 # The semantic identity of a fact: what claim it makes, ignoring how sure we
 # are or where it came from.
 FactKey = tuple[str, str]
-
-
-def canonical_json(payload: Any) -> bytes:
-    """Serialize ``payload`` to a byte string that is stable across runs.
-
-    Hashing has one hard requirement: the same logical value must always
-    produce the same bytes. A plain ``json.dumps`` does not guarantee that —
-    key order follows insertion order, and the default separators embed
-    incidental whitespace. Both would let an identical fact hash two different
-    ways depending on how it happened to be constructed, which would silently
-    break deduplication.
-
-    So we pin down every degree of freedom:
-
-    - ``sort_keys=True`` makes key order a function of the value, not of
-      construction order.
-    - ``separators=(",", ":")`` removes whitespace entirely.
-    - ``ensure_ascii=False`` + explicit UTF-8 keeps non-ASCII text as itself
-      rather than as ``\\uXXXX`` escapes, so the encoding is one obvious thing.
-    - ``allow_nan=False`` rejects ``NaN``/``Infinity``, which are not valid
-      JSON and do not round-trip through other parsers.
-    """
-    text = json.dumps(
-        payload,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    )
-    return text.encode("utf-8")
-
-
-def hash_payload(payload: Any) -> str:
-    """Return the SHA-256 hex digest of ``payload``'s canonical JSON.
-
-    SHA-256 rather than git's SHA-1 because there is no legacy to be compatible
-    with, and choosing a broken hash on purpose in 2026 is hard to defend.
-    """
-    return hashlib.sha256(canonical_json(payload)).hexdigest()
-
-
-def _utcnow() -> str:
-    """Current UTC time as an ISO-8601 string with an explicit offset."""
-    return datetime.now(timezone.utc).isoformat()
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +67,7 @@ class Fact:
     predicate: str
     object: str
     confidence: float = 1.0
-    asserted_at: str = field(default_factory=_utcnow)
+    asserted_at: str = field(default_factory=utcnow)
     source: str | None = None
     source_text: str | None = None
 
@@ -208,7 +163,7 @@ class Fact:
             confidence=self.confidence if confidence is None else confidence,
             source=self.source if source is None else source,
             source_text=self.source_text if source_text is None else source_text,
-            asserted_at=asserted_at or _utcnow(),
+            asserted_at=asserted_at or utcnow(),
         )
 
     def __str__(self) -> str:

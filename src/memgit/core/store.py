@@ -35,7 +35,7 @@ import zlib
 from pathlib import Path
 from typing import Any, Iterator
 
-from memgit.core.fact import canonical_json, hash_payload
+from memgit.core.canonical import canonical_json, hash_payload
 
 __all__ = ["ObjectStore", "CorruptObjectError", "ObjectNotFoundError"]
 
