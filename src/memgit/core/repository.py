@@ -43,12 +43,13 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
+from memgit.core.cardinality import CardinalityMap
 from memgit.core.commit import Commit
 from memgit.core.fact import Fact
 from memgit.core.graph import walk
 from memgit.core.refs import Head, RefStore
 from memgit.core.store import ObjectStore, is_object_hash
-from memgit.core.tree import Tree
+from memgit.core.tree import EMPTY_TREE_HASH, Tree
 
 __all__ = [
     "Repository",
@@ -60,6 +61,7 @@ __all__ = [
 
 _CONFIG_NAME = "config"
 _HEAD_NAME = "HEAD"
+_CARDINALITY_NAME = "cardinality.json"
 
 
 class NotARepositoryError(Exception):
@@ -234,7 +236,16 @@ class Repository:
         return Commit.read(self.store, self.resolve(rev))
 
     def read_tree(self, rev: str) -> Tree:
-        """Read the tree at ``rev`` — a commit-ish, or a tree hash directly."""
+        """Read the tree at ``rev`` — a commit-ish, or a tree hash directly.
+
+        ``EMPTY_TREE_HASH`` is special-cased rather than looked up: nothing
+        ever writes that object to the store (``init`` stays object-free), so
+        a naive lookup would raise ``ObjectNotFoundError`` for the one tree
+        hash that is guaranteed to exist conceptually — "believe nothing",
+        the baseline :meth:`diff` uses for a root commit.
+        """
+        if rev == EMPTY_TREE_HASH:
+            return Tree(())
         if is_object_hash(rev):
             payload = self.store.get(rev)
             if payload.get("type") == "tree":
@@ -246,6 +257,27 @@ class Repository:
         start_hash = self.resolve(start)
         for _commit_hash, commit in walk(start_hash, self.read_commit, limit=limit):
             yield commit
+
+    # -- cardinality ---------------------------------------------------------
+
+    def cardinality(self) -> CardinalityMap:
+        """This repository's cardinality map — the diff engine's single/multi schema.
+
+        Repo-local and uncommitted, unlike everything else in ``.memgit``: see
+        ``cardinality.py``'s module docstring for why. A missing file is a
+        normal state, matching :meth:`config`.
+        """
+        path = self.memgit_dir / _CARDINALITY_NAME
+        if not path.is_file():
+            return CardinalityMap.default_map()
+        return CardinalityMap.from_dict(json.loads(path.read_text(encoding="utf-8")))
+
+    def set_cardinality(self, mapping: CardinalityMap) -> None:
+        """Overwrite the cardinality map, atomically."""
+        path = self.memgit_dir / _CARDINALITY_NAME
+        lock = path.with_name(path.name + ".lock")
+        lock.write_text(json.dumps(mapping.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        lock.replace(path)
 
     # -- writing -------------------------------------------------------
 

@@ -51,8 +51,9 @@ class Fact:
         subject: What the claim is about (``"user"``, ``"project:memgit"``).
         predicate: The relation asserted (``"prefers_language"``).
         object: The value of the relation (``"Python"``). Always a string —
-            typed values are a deliberate non-goal; see the cardinality map in
-            the diff engine for the small amount of schema we *do* keep.
+            typed values are a deliberate non-goal; see
+            :class:`memgit.core.cardinality.CardinalityMap` for the small
+            amount of schema we *do* keep.
         confidence: How sure the agent is, in ``[0.0, 1.0]``.
         asserted_at: ISO-8601 UTC timestamp of when this was recorded.
         source: Where the belief came from (``"session:42/turn:7"``). Opaque to
