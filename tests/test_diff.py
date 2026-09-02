@@ -326,6 +326,41 @@ class TestMixedAndPrecedence:
         assert objects == sorted(objects)
 
 
+class TestShadowedDuplicates:
+    def test_same_object_twice_is_not_a_violation(self):
+        older = make_fact(object="Python", asserted_at="2026-01-01T00:00:00+00:00", confidence=0.5)
+        newer = make_fact(object="Python", asserted_at="2026-02-01T00:00:00+00:00", confidence=0.9)
+        after = Tree.from_entries([("user", "prefers_language", [older.hash, newer.hash])])
+        reader = CountingFactReader({older.hash: older, newer.hash: newer})
+
+        result = diff_trees(Tree(()), after, reader)
+        assert not result.violations
+        kd = result.keys[0]
+        assert kd.shadowed_after == (older,)
+        assert kd.values[0].after == newer
+
+    def test_tie_on_asserted_at_breaks_on_confidence(self):
+        low = make_fact(object="Python", confidence=0.3, asserted_at="2026-01-01T00:00:00+00:00")
+        high = make_fact(object="Python", confidence=0.8, asserted_at="2026-01-01T00:00:00+00:00")
+        after = Tree.from_entries([("user", "prefers_language", [low.hash, high.hash])])
+        reader = CountingFactReader({low.hash: low, high.hash: high})
+
+        result = diff_trees(Tree(()), after, reader)
+        assert result.keys[0].values[0].after == high
+        assert result.keys[0].shadowed_after == (low,)
+
+    def test_tie_on_both_is_stable_across_runs(self):
+        a = make_fact(object="Python", confidence=0.5, asserted_at="2026-01-01T00:00:00+00:00")
+        b = make_fact(object="Python", confidence=0.5, asserted_at="2026-01-01T00:00:00+00:00", source="x")
+        after = Tree.from_entries([("user", "prefers_language", [a.hash, b.hash])])
+        reader = CountingFactReader({a.hash: a, b.hash: b})
+
+        first = diff_trees(Tree(()), after, reader).keys[0].values[0].after
+        second = diff_trees(Tree(()), after, reader).keys[0].values[0].after
+        assert first == second
+
+
+
 class TestEmptyTreeDiff:
     def test_empty_before_all_added(self):
         fact = make_fact()
