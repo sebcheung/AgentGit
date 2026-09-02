@@ -360,7 +360,6 @@ class TestShadowedDuplicates:
         assert first == second
 
 
-
 class TestEmptyTreeDiff:
     def test_empty_before_all_added(self):
         fact = make_fact()
@@ -384,3 +383,63 @@ class TestEmptyTreeDiff:
         assert Tree(()).hash == EMPTY_TREE_HASH
 
 
+class TestLaziness:
+    def test_unchanged_keys_cost_no_fact_reads_at_scale(self):
+        facts = [make_fact(subject=f"s{i}", predicate="p", object=str(i)) for i in range(1000)]
+        before = Tree.from_facts(facts)
+        changed = make_fact(subject="s0", predicate="p", object="changed")
+        after_facts = facts[1:] + [changed]
+        after = Tree.from_facts(after_facts)
+        reader = CountingFactReader({f.hash: f for f in facts + [changed]})
+
+        result = diff_trees(before, after, reader)
+        assert len(result.keys) == 1
+        assert reader.calls <= 4
+
+    def test_include_unchanged_includes_all_keys_with_still_no_extra_reads(self):
+        """The identical-hash short circuit means unchanged keys never cost a
+        fact read regardless of the flag; ``include_unchanged`` only changes
+        which keys make it into the result."""
+        facts = [make_fact(subject=f"s{i}", predicate="p", object=str(i)) for i in range(5)]
+        tree = Tree.from_facts(facts)
+        reader = CountingFactReader({f.hash: f for f in facts})
+
+        assert diff_trees(tree, tree, reader, include_unchanged=False).is_empty
+        result = diff_trees(tree, tree, reader, include_unchanged=True)
+        assert len(result.keys) == 5
+        assert reader.calls == 0
+
+    def test_diff_hashes_reads_nothing(self):
+        facts = [make_fact(subject=f"s{i}", predicate="p", object=str(i)) for i in range(5)]
+        before = Tree.from_facts(facts)
+        after = Tree.from_facts(facts[1:])
+        diff_hashes(before, after)  # would raise if it tried to read a fact
+
+
+class TestStatAndSerialization:
+    def test_stat_agrees_with_keys(self):
+        chess = make_fact(predicate="likes", object="chess")
+        vim = make_fact(predicate="favorite_editor", object="vim")
+        neovim = make_fact(predicate="favorite_editor", object="neovim")
+        before = Tree.from_facts([vim])
+        after = Tree.from_facts([chess, neovim])
+        reader = CountingFactReader({f.hash: f for f in (chess, vim, neovim)})
+
+        result = diff_trees(before, after, reader)
+        stat = result.stat()
+        assert stat.keys_changed == len(result.keys)
+        assert sum(stat.by_kind.values()) == len(result.keys)
+
+    def test_to_dict_survives_json_round_trip(self):
+        import json
+
+        fact = make_fact()
+        after = Tree.from_facts([fact])
+        reader = CountingFactReader({fact.hash: fact})
+        result = diff_trees(Tree(()), after, reader)
+        json.dumps(result.to_dict())
+
+    def test_to_dict_embeds_the_cardinality_map_used(self):
+        mapping = CardinalityMap({"likes": "multi"})
+        result = diff_trees(Tree(()), Tree(()), lambda h: (_ for _ in ()).throw(AssertionError()), cardinality=mapping)
+        assert result.to_dict()["cardinality"] == mapping.to_dict()
