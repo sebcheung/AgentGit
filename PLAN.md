@@ -96,7 +96,7 @@ A git-inspired version control and time-travel debugging system for AI agent mem
 1. **Fact schema** — decide the structured format for a "memory item" (subject/predicate/object + confidence + timestamp + source). This decision shapes everything downstream — spend real time here.
 2. **Object store** — content-addressable storage: hash each fact, store by hash, dedupe automatically (a fact that hasn't changed doesn't get re-stored). This is literally git's blob model.
 3. **Commit graph** — a commit = a tree of fact-object hashes + parent commit + message. Branches are just pointers to a commit. This is the DAG git also uses.
-4. **Diff engine** — given two commits, compute added/removed/changed facts. The interesting design question: what counts as "changed" vs. "contradicted" vs. "unrelated new fact"?
+4. **Diff engine** — given two commits, compute added/removed/changed facts. The interesting design question — what counts as "changed" vs. "contradicted" vs. "unrelated new fact"? — is answered in "Decisions locked in" below (change taxonomy, cardinality map).
 5. **Checkout / rewind** — materialize the full memory state at any commit, so an agent can be "restored" to a past belief state.
 6. **Agent runtime hookup** — wire a real agent (via the Anthropic API) to read from a memory state and write new facts back as a new commit after each interaction.
 7. **Replay / ablation engine** — the causal-attribution piece: take a specific memory diff, remove just that one fact, replay the same query, and measure whether/how the output changes. This is what turns "a fancy database" into "a debugging tool" — treat it like a real experiment (control for everything except the one variable).
@@ -118,8 +118,8 @@ increment, tested before moving on:
 | 0. Skeleton | — | ✅ |
 | 1. Fact + CAS | 1, 2 | ✅ |
 | 2. Commit graph | 3 | ✅ |
-| 3. Diff engine | 4 | ← next |
-| 4. Checkout / rewind | 5 | |
+| 3. Diff engine | 4 | ✅ |
+| 4. Checkout / rewind | 5 | ← next |
 | 5. Agent runtime | 6 | |
 | 6. Replay / ablation | 7 | |
 | 7. Retrieval + confidence decay | 8 + 9 (merged) | |
@@ -148,6 +148,10 @@ Design choices already made and built on, not up for re-litigation without a rea
 | Tree entry cardinality | One `(subject, predicate)` key maps to a *list* of fact hashes, not one | Keeps `(subject, predicate)` the single diff key exactly as `fact.py` promises, and leaves "is a second value an addition or a contradiction" as a pure diff-engine interpretation rule (slice 3's cardinality map) instead of baking an ontology into storage. |
 | Staging / index | No `.memgit/index`; `Repository.commit()` takes the whole fact set | Git's index solves selective staging and a stat cache, neither of which applies to an agent turn (all-or-nothing, facts already in memory). An index is also mutable, uncommitted, unhashed state — exactly the one thing this project's premise says should always be diffable and reversible. When slice 5 needs staging across two process invocations, the answer is a ref holding a tree hash, not git's binary index. |
 | Checkout / rewind | Its own slice (4), after the diff engine (3), not bundled into the commit graph | Materializing a past state is easiest to get right once the diff engine has already forced a decision about what a tree entry means at a given key. |
+| Cardinality map | Repo-local `.memgit/cardinality.json`, keyed on predicate, undeclared predicates default to `single`; not committed, not hashed | A diff is a question you ask, not data you store — committing the schema forces an unanswerable "whose schema wins" when diffing two commits made under different declarations. `single` by default because a debugging tool should default toward the loud classification: a rival value at a functional predicate gets reported as `contradicted`, and declaring it `multi` is a one-time cost. Every machine-readable diff embeds the map it used, so results stay auditable without being versioned. |
+| Change taxonomy | Eight key-level kinds (`unchanged`/`added`/`removed`/`reaffirmed`/`contradicted`/`value_added`/`value_removed`/`mixed`), with the authoritative detail carried per *value* | A key can change several ways at once, so one label can't be authoritative on its own — it's a summary over a per-value list, with a total, ordered collapse rule. `added` is the unrelated new fact, `value_added` the coexisting belief, `contradicted` the revision, `reaffirmed` the same claim at new confidence. |
+| `memgit diff` with no arguments | `HEAD` vs its first parent | There is no working tree and no index (see the staging row), so there is no uncommitted state to diff. "What did the newest turn change?" is the honest analogue and the more useful default. |
+| `merge_base` | Two-source painting + a reduce pass; `merge_bases` returns all candidates, `merge_base` picks one deterministically by date | Needed by `diff a...b`, the honest question for branch attribution: a direct two-dot diff would also report facts one branch simply hasn't received yet. Inherits `walk`'s clock-skew caveat; a synthesized virtual merge base for criss-cross histories would need a merge algorithm MemGit has no slice for, so multi-candidate ambiguity is surfaced rather than resolved. |
 | LLM | Anthropic API, `claude-opus-5`, Python SDK | |
 
 ---
