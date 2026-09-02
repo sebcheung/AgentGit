@@ -18,14 +18,26 @@ what the test suite actually needs. A Kahn-style topological pass is the
 honest fix if the dashboard's graph rendering ever needs a hard guarantee;
 it is noted here, not built.
 
-``merge_base`` (lowest common ancestor) is deliberately not in this module
-yet. Nothing before the diff engine (slice 3, where "diff between two
-branches" is the feature that needs it) calls it, and a *correct*
-multi-candidate LCA over a DAG wants generation numbers or careful
-multi-source painting — code that is hard to trust without the branchy
-fixtures that don't exist until there's a reason to merge something. The one
-thing this slice owes that future work is that ``Commit.parents`` is already
-a list.
+``merge_base``/``merge_bases`` implement the lowest common ancestor(s) via
+two-source painting (git's ``paint_down_to_common``), because the diff engine
+(slice 3) needs a fork point to answer "what did *this* branch do?" without
+also reporting facts the other branch simply hasn't received yet. Two honest
+gaps carry over from ``walk``'s:
+
+**Clock skew hits termination, not just ordering.** The stale-queue
+termination below is a date-ordered heap, so it inherits ``walk``'s caveat:
+skewed timestamps could in principle stop the walk early. Git had the
+identical bug and fixed it with generation numbers; the same mitigation
+applies here (one process, one machine), and the same honest fix is named,
+not built.
+
+**Multi-candidate bases are returned, not resolved.** On a criss-cross
+history, more than one commit can be a valid merge base with neither
+provably better than the other. ``merge_bases`` returns all survivors;
+``merge_base`` picks one deterministically by date. Git's answer for a
+criss-cross is to synthesize a virtual base by recursively merging the
+candidates — that needs a merge algorithm this project has no slice for, so
+the ambiguity is surfaced to the caller instead of quietly resolved.
 """
 
 from __future__ import annotations
@@ -35,7 +47,7 @@ from typing import Callable, Iterable, Iterator
 
 from memgit.core.commit import Commit
 
-__all__ = ["CommitReader", "walk", "ancestors", "is_ancestor"]
+__all__ = ["CommitReader", "walk", "ancestors", "is_ancestor", "merge_base", "merge_bases"]
 
 CommitReader = Callable[[str], Commit]
 
@@ -120,3 +132,84 @@ def ancestors(start: str, read: CommitReader) -> set[str]:
 def is_ancestor(candidate: str, of: str, read: CommitReader) -> bool:
     """Whether ``candidate`` is ``of`` itself or one of its ancestors."""
     return candidate in ancestors(of, read)
+
+
+_REACH_A = 1
+_REACH_B = 2
+_RESULT = 4
+_STALE = 8
+
+
+def merge_bases(a: str, b: str, read: CommitReader) -> tuple[str, ...]:
+    """Every lowest common ancestor of ``a`` and ``b``, newest-first.
+
+    Two-source painting: walk both histories at once in date order, flagging
+    each commit with which side(s) can reach it. The first commit reachable
+    from both sides is a merge base; ``_STALE`` propagates from it to its own
+    ancestors so they are not reported too. The walk stops as soon as every
+    commit still queued is stale — the laziness property that keeps this from
+    reading the whole history on a shallow fork.
+
+    A final reduce pass drops any candidate that is itself an ancestor of
+    another candidate — a backstop for graphs stale-propagation alone
+    wouldn't cleanly resolve, turning "plausible" into "correct".
+
+    Two independently-rooted histories are a legitimate state, not an error:
+    this returns ``()`` for them.
+    """
+    flags: dict[str, int] = {}
+    loaded: dict[str, Commit] = {}
+    heap: list[tuple[_Newest, str]] = []
+    queued: set[str] = set()
+
+    def push(commit_hash: str, flag: int) -> None:
+        flags[commit_hash] = flags.get(commit_hash, 0) | flag
+        if commit_hash in queued:
+            return
+        queued.add(commit_hash)
+        commit = read(commit_hash)
+        loaded[commit_hash] = commit
+        heapq.heappush(heap, (_Newest(commit.committed_at), commit_hash))
+
+    push(a, _REACH_A)
+    push(b, _REACH_B)
+
+    candidates: list[str] = []
+    while heap:
+        if all(flags[h] & _STALE for _key, h in heap):
+            break
+
+        _key, commit_hash = heapq.heappop(heap)
+        queued.discard(commit_hash)
+        commit = loaded[commit_hash]
+        own_flags = flags[commit_hash]
+
+        is_candidate = (
+            own_flags & _REACH_A and own_flags & _REACH_B and not own_flags & (_RESULT | _STALE)
+        )
+        if is_candidate:
+            own_flags |= _RESULT | _STALE
+            flags[commit_hash] = own_flags
+            candidates.append(commit_hash)
+
+        propagate = own_flags & (_REACH_A | _REACH_B | _STALE)
+        for parent in commit.parents:
+            push(parent, propagate)
+
+    reduced = [
+        h for h in candidates if not any(other != h and is_ancestor(h, other, read) for other in candidates)
+    ]
+    reduced.sort(key=lambda h: (loaded[h].committed_at, h), reverse=True)
+    return tuple(reduced)
+
+
+def merge_base(a: str, b: str, read: CommitReader) -> str | None:
+    """One lowest common ancestor of ``a`` and ``b``, chosen deterministically.
+
+    ``None`` if the two histories share no common ancestor. On a criss-cross
+    history where more than one base exists, this picks the newest by date
+    (hash tie-broken) — see the module docstring for why that ambiguity is
+    surfaced rather than resolved.
+    """
+    bases = merge_bases(a, b, read)
+    return bases[0] if bases else None
