@@ -313,13 +313,18 @@ def diff_cmd(
 
 
 @app.command("show")
-def show_cmd(rev: str = typer.Argument("HEAD", help="Revision to show.")) -> None:
-    """Show a commit's metadata and the facts in its tree. Mirrors ``git show``."""
+def show_cmd(
+    rev: str = typer.Argument("HEAD", help="Revision to show."),
+    facts: bool = typer.Option(
+        False, "--facts", help="List every fact in the tree instead of the diff."
+    ),
+    stat: bool = typer.Option(False, "--stat", help="Summary counts only (diff mode)."),
+) -> None:
+    """Show a commit's metadata and what it changed. Mirrors ``git show``."""
     repo = _repo()
     try:
         commit_hash = repo.resolve(rev)
         commit = repo.read_commit(commit_hash)
-        tree = repo.read_tree(commit_hash)
     except RevisionNotFoundError as exc:
         _fail(f"unknown revision: {exc}")
         return
@@ -331,8 +336,19 @@ def show_cmd(rev: str = typer.Argument("HEAD", help="Revision to show.")) -> Non
     typer.echo(f"author: {commit.author}")
     typer.echo(f"date:   {commit.committed_at}")
     typer.echo(f"\n    {commit.message}\n")
-    for fact in tree.load(repo.store):
-        typer.echo(f"  {fact}")
+
+    if facts:
+        tree = repo.read_tree(commit_hash)
+        for fact in tree.load(repo.store):
+            typer.echo(f"  {fact}")
+        return
+
+    result = repo.diff(after=commit_hash)
+    if stat:
+        _print_diff_stat(result)
+    else:
+        _print_diff_human(result, name_only=False)
+    _print_violations(result)
 
 
 @app.command("ls-tree")
