@@ -310,8 +310,6 @@ def diff_cmd(
         raise typer.Exit(code=1)
 
 
-
-
 @app.command("show")
 def show_cmd(
     rev: str = typer.Argument("HEAD", help="Revision to show."),
@@ -530,6 +528,43 @@ def fsck_cmd() -> None:
         raise typer.Exit(code=1)
 
     typer.secho("all objects verified", fg=typer.colors.GREEN)
+
+
+cardinality_app = typer.Typer(help="Inspect and edit the diff engine's single/multi schema.")
+app.add_typer(cardinality_app, name="cardinality")
+
+
+@cardinality_app.callback(invoke_without_command=True)
+def cardinality_main(ctx: typer.Context) -> None:
+    """List declared predicates and the effective default. Mirrors bare ``memgit cardinality``."""
+    if ctx.invoked_subcommand is not None:
+        return
+    mapping = _repo().cardinality()
+    typer.echo(f"default: {mapping.default}")
+    for predicate, cardinality in mapping.declared():
+        typer.echo(f"{predicate}\t{cardinality}")
+
+
+@cardinality_app.command("set")
+def cardinality_set_cmd(
+    predicate: str = typer.Argument(..., help="Predicate to declare."),
+    cardinality: str = typer.Argument(..., help="'single' or 'multi'."),
+) -> None:
+    """Declare PREDICATE as single- or multi-valued for the diff engine."""
+    if cardinality not in ("single", "multi"):
+        _fail(f"cardinality must be 'single' or 'multi', got {cardinality!r}")
+        return
+    repo = _repo()
+    repo.set_cardinality(repo.cardinality().with_predicate(predicate, cardinality))
+
+
+@cardinality_app.command("unset")
+def cardinality_unset_cmd(
+    predicate: str = typer.Argument(..., help="Predicate to remove the declaration for."),
+) -> None:
+    """Remove PREDICATE's declaration, reverting it to the map's default."""
+    repo = _repo()
+    repo.set_cardinality(repo.cardinality().without_predicate(predicate))
 
 
 if __name__ == "__main__":
