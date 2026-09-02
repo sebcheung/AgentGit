@@ -27,10 +27,11 @@ written: what does one key hold? ``fact.py``'s docstring promises that
 ``(subject, predicate)`` is *the* diff key, but an agent can believe more than
 one thing about a predicate at once (it can like both chess and go). Deciding
 that here, in storage, would bake an ontology into the object format that only
-the diff engine (slice 3) should own. So a tree entry holds a *list* of fact
-hashes per key — cardinality ("is a second value here an addition or a
-contradiction?") is left as a pure interpretation question for whoever reads
-the tree, not a fact about how the tree is shaped.
+the diff engine should own. So a tree entry holds a *list* of fact hashes per
+key — cardinality ("is a second value here an addition or a contradiction?")
+is left as a pure interpretation question for whoever reads the tree, not a
+fact about how the tree is shaped. That question is answered by
+:class:`memgit.core.cardinality.CardinalityMap`.
 """
 
 from __future__ import annotations
@@ -209,8 +210,8 @@ class Tree:
 
         One key can map to more than one hash — that is the tree's answer to
         cardinality: it makes no claim about whether a second hash means an
-        addition or a contradiction. That call belongs to slice 3's
-        cardinality map, not to storage.
+        addition or a contradiction. That call belongs to
+        :class:`memgit.core.cardinality.CardinalityMap`, not to storage.
         """
         return {(subject, predicate): hashes for subject, predicate, hashes in self.entries}
 
@@ -246,8 +247,8 @@ class Tree:
 
 
 # The tree of a memory state with no facts in it at all — "believe nothing".
-# Named now, even though slice 2 has no caller for it yet, because slice 3's
-# diff against the root commit and slice 4's full rewind both need a concrete
-# empty state to diff or check out against, and it should be one constant
-# rather than each site re-deriving Tree(()).hash.
+# Used as the diff baseline for a root commit (Repository.diff) and will be
+# slice 4's full-rewind baseline too — one constant rather than each site
+# re-deriving Tree(()).hash. Note that no caller writes this object to the
+# store; Repository.read_tree special-cases the hash instead.
 EMPTY_TREE_HASH = Tree(()).hash
