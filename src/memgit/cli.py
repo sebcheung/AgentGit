@@ -10,7 +10,9 @@ import typer
 
 from memgit import __version__
 from memgit.core.commit import Commit
+from memgit.core.diff import ChangeKind, Diff
 from memgit.core.fact import Fact
+from memgit.core.graph import is_ancestor
 from memgit.core.repository import (
     EmptyCommitError,
     NotARepositoryError,
@@ -161,14 +163,166 @@ def log_cmd(
             typer.echo(f"\n    {commit.message}\n")
 
 
+_DIFF_PREFIXES: dict[ChangeKind, tuple[str, str | None]] = {
+    ChangeKind.ADDED: ("+", typer.colors.GREEN),
+    ChangeKind.REMOVED: ("-", typer.colors.RED),
+    ChangeKind.REAFFIRMED: ("~", typer.colors.BLUE),
+    ChangeKind.CONTRADICTED: ("!", typer.colors.YELLOW),
+    ChangeKind.VALUE_ADDED: (">", typer.colors.GREEN),
+    ChangeKind.VALUE_REMOVED: ("<", typer.colors.RED),
+    ChangeKind.MIXED: ("*", typer.colors.YELLOW),
+    ChangeKind.UNCHANGED: (" ", None),
+}
+
+
+def _print_diff_human(diff: Diff, *, name_only: bool) -> None:
+    for kd in diff.keys:
+        if name_only:
+            typer.echo(f"{kd.subject}\t{kd.predicate}")
+            continue
+        prefix, color = _DIFF_PREFIXES[kd.kind]
+        detail = ", ".join(str(v) for v in kd.changed_values)
+        line = f"{prefix} {kd.subject}\t{kd.predicate}\t{detail}"
+        if color is not None:
+            typer.secho(line, fg=color)
+        else:
+            typer.echo(line)
+
+
+def _print_diff_stat(diff: Diff) -> None:
+    stat = diff.stat()
+    by_kind = ", ".join(
+        f"{count} {str(kind).replace('_', ' ')}" for kind, count in sorted(stat.by_kind.items())
+    )
+    summary = f"{stat.keys_changed} key(s) changed"
+    if by_kind:
+        summary += f": {by_kind}"
+    typer.echo(summary)
+    total_facts = stat.facts_added + stat.facts_removed + stat.facts_reaffirmed
+    typer.echo(f"{total_facts} fact(s): +{stat.facts_added} -{stat.facts_removed} ~{stat.facts_reaffirmed}")
+
+
+def _print_violations(diff: Diff) -> None:
+    if not diff.violations:
+        return
+    typer.secho("cardinality:", fg=typer.colors.YELLOW, err=True)
+    for v in diff.violations:
+        typer.secho(
+            f"  {v.key[0]} {v.key[1]} ({v.side}): {', '.join(v.objects)}",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+
+
+def _parse_diff_range(
+    rev_a: str | None, rev_b: str | None, merge_base_flag: bool
+) -> tuple[str | None, str, bool]:
+    """Resolve the CLI's revision arguments to ``(before, after, use_merge_base)``.
+
+    No working tree and no index means there is no uncommitted state to
+    diff, so zero arguments falls back to "what did the newest commit
+    change" rather than git's "what's staged". A lone ``A...B`` or ``A..B``
+    packed into ``rev_a`` is split here since it is user-input syntax, not a
+    revision-resolution concern ``Repository``/``RefStore`` should own.
+    """
+    if rev_a is None:
+        return None, "HEAD", merge_base_flag
+    if rev_b is None:
+        if "..." in rev_a:
+            left, right = rev_a.split("...", 1)
+            return left, right, True
+        if ".." in rev_a:
+            left, right = rev_a.split("..", 1)
+            return left, right, merge_base_flag
+        return None, rev_a, merge_base_flag
+    return rev_a, rev_b, merge_base_flag
+
+
+@app.command("diff")
+def diff_cmd(
+    rev_a: str = typer.Argument(None, help="Revision, or a range: A..B / A...B."),
+    rev_b: str = typer.Argument(None, help="Second revision, if not given as a range."),
+    stat: bool = typer.Option(False, "--stat", help="Summary counts only."),
+    name_only: bool = typer.Option(False, "--name-only", help="List changed keys only."),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output."),
+    include_unchanged: bool = typer.Option(False, "--unchanged", help="Include unchanged keys."),
+    merge_base_flag: bool = typer.Option(
+        False, "--merge-base", help="Compare against merge_base(A, B) instead of A directly."
+    ),
+    strict_cardinality: bool = typer.Option(
+        False, "--strict-cardinality", help="Exit 1 if any cardinality violation was found."
+    ),
+) -> None:
+    """Compare two memory states. Mirrors ``git diff``.
+
+    MemGit has no staging area, so there is no uncommitted state to diff:
+    with no arguments this shows what the newest commit changed, i.e. HEAD
+    against its first parent.
+    """
+    repo = _repo()
+    if repo.head().commit is None:
+        _fail("no commits yet")
+        return
+
+    before_rev, after_rev, use_merge_base = _parse_diff_range(rev_a, rev_b, merge_base_flag)
+
+    try:
+        result = repo.diff(
+            before_rev, after_rev, include_unchanged=include_unchanged, use_merge_base=use_merge_base
+        )
+    except RevisionNotFoundError as exc:
+        _fail(f"unknown revision: {exc}")
+        return
+    except ValueError as exc:
+        _fail(str(exc))
+        return
+
+    if not use_merge_base and before_rev is not None:
+        try:
+            before_hash = repo.resolve(before_rev)
+            after_hash = repo.resolve(after_rev)
+            diverged = not is_ancestor(before_hash, after_hash, repo.read_commit) and not is_ancestor(
+                after_hash, before_hash, repo.read_commit
+            )
+        except RevisionNotFoundError:
+            diverged = False
+        if diverged:
+            typer.secho(
+                f"note: {before_rev} and {after_rev} have diverged; "
+                f"try `memgit diff {before_rev}...{after_rev}`",
+                fg=typer.colors.BLUE,
+                err=True,
+            )
+
+    if as_json:
+        payload = result.to_dict()
+        payload["before"] = before_rev
+        payload["after"] = after_rev
+        typer.echo(json.dumps(payload, indent=2, ensure_ascii=False))
+    elif stat:
+        _print_diff_stat(result)
+    else:
+        _print_diff_human(result, name_only=name_only)
+
+    _print_violations(result)
+
+    if strict_cardinality and result.violations:
+        raise typer.Exit(code=1)
+
+
 @app.command("show")
-def show_cmd(rev: str = typer.Argument("HEAD", help="Revision to show.")) -> None:
-    """Show a commit's metadata and the facts in its tree. Mirrors ``git show``."""
+def show_cmd(
+    rev: str = typer.Argument("HEAD", help="Revision to show."),
+    facts: bool = typer.Option(
+        False, "--facts", help="List every fact in the tree instead of the diff."
+    ),
+    stat: bool = typer.Option(False, "--stat", help="Summary counts only (diff mode)."),
+) -> None:
+    """Show a commit's metadata and what it changed. Mirrors ``git show``."""
     repo = _repo()
     try:
         commit_hash = repo.resolve(rev)
         commit = repo.read_commit(commit_hash)
-        tree = repo.read_tree(commit_hash)
     except RevisionNotFoundError as exc:
         _fail(f"unknown revision: {exc}")
         return
@@ -180,8 +334,19 @@ def show_cmd(rev: str = typer.Argument("HEAD", help="Revision to show.")) -> Non
     typer.echo(f"author: {commit.author}")
     typer.echo(f"date:   {commit.committed_at}")
     typer.echo(f"\n    {commit.message}\n")
-    for fact in tree.load(repo.store):
-        typer.echo(f"  {fact}")
+
+    if facts:
+        tree = repo.read_tree(commit_hash)
+        for fact in tree.load(repo.store):
+            typer.echo(f"  {fact}")
+        return
+
+    result = repo.diff(after=commit_hash)
+    if stat:
+        _print_diff_stat(result)
+    else:
+        _print_diff_human(result, name_only=False)
+    _print_violations(result)
 
 
 @app.command("ls-tree")
@@ -363,6 +528,43 @@ def fsck_cmd() -> None:
         raise typer.Exit(code=1)
 
     typer.secho("all objects verified", fg=typer.colors.GREEN)
+
+
+cardinality_app = typer.Typer(help="Inspect and edit the diff engine's single/multi schema.")
+app.add_typer(cardinality_app, name="cardinality")
+
+
+@cardinality_app.callback(invoke_without_command=True)
+def cardinality_main(ctx: typer.Context) -> None:
+    """List declared predicates and the effective default. Mirrors bare ``memgit cardinality``."""
+    if ctx.invoked_subcommand is not None:
+        return
+    mapping = _repo().cardinality()
+    typer.echo(f"default: {mapping.default}")
+    for predicate, cardinality in mapping.declared():
+        typer.echo(f"{predicate}\t{cardinality}")
+
+
+@cardinality_app.command("set")
+def cardinality_set_cmd(
+    predicate: str = typer.Argument(..., help="Predicate to declare."),
+    cardinality: str = typer.Argument(..., help="'single' or 'multi'."),
+) -> None:
+    """Declare PREDICATE as single- or multi-valued for the diff engine."""
+    if cardinality not in ("single", "multi"):
+        _fail(f"cardinality must be 'single' or 'multi', got {cardinality!r}")
+        return
+    repo = _repo()
+    repo.set_cardinality(repo.cardinality().with_predicate(predicate, cardinality))
+
+
+@cardinality_app.command("unset")
+def cardinality_unset_cmd(
+    predicate: str = typer.Argument(..., help="Predicate to remove the declaration for."),
+) -> None:
+    """Remove PREDICATE's declaration, reverting it to the map's default."""
+    repo = _repo()
+    repo.set_cardinality(repo.cardinality().without_predicate(predicate))
 
 
 if __name__ == "__main__":

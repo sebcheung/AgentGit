@@ -5,6 +5,43 @@ branch, diff, and (soon) rewind what an agent "believed" over time, so you can
 causally explain *why* it behaved the way it did. See [PLAN.md](PLAN.md) for
 the full design and build order.
 
+## Diffing memory
+
+`memgit diff` is the headline feature: a *semantic* diff over structured
+facts, not a text diff. Every changed `(subject, predicate)` gets one line,
+prefixed by what happened to it:
+
+```sh
+$ memgit diff
+! user  favorite_editor    vim -> neovim (0.90)
++ user  timezone           Europe/Berlin (0.80)
+> user  likes              +go (0.80)
+```
+
+| prefix | meaning |
+|---|---|
+| `+` / `-` | a belief the agent didn't have before / doesn't have anymore |
+| `~` | reaffirmed — same claim, new confidence, timestamp, or source |
+| `!` | contradicted — a `single`-valued predicate's value was replaced or rivalled |
+| `>` / `<` | a `multi`-valued predicate gained / lost one coexisting value |
+| `*` | mixed — a `multi`-valued predicate both gained and lost a value |
+
+Whether a second value at a key is a contradiction or just another belief is
+controlled by `memgit cardinality` (`.memgit/cardinality.json`, undeclared
+predicates default to `single`):
+
+```sh
+$ memgit cardinality set likes multi
+$ memgit diff        # the `likes` line above turns from `!` into `>`
+```
+
+`memgit diff a...b` compares against the two branches' merge base rather than
+diffing them directly — the honest question for "what did *this* branch
+actually change", since a direct diff would also report facts the other
+branch simply hasn't received yet. See [PLAN.md](PLAN.md)'s "Decisions locked
+in" for the full change taxonomy and the reasoning behind the cardinality
+map's defaults.
+
 ## On-disk layout
 
 MemGit's object store, refs, and HEAD are deliberately laid out like git's,
