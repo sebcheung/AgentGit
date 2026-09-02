@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import pytest
 
+from memgit.core.cardinality import CardinalityMap
+from memgit.core.diff import ChangeKind
 from memgit.core.fact import Fact
 from memgit.core.repository import (
     EmptyCommitError,
@@ -19,6 +21,7 @@ from memgit.core.repository import (
     RepositoryExistsError,
     RevisionNotFoundError,
 )
+from memgit.core.tree import EMPTY_TREE_HASH
 
 
 def make_fact(**overrides) -> Fact:
@@ -237,3 +240,61 @@ class TestBranches:
         repo.commit([make_fact()], "seed")
         repo.delete_branch("main", force=True)
         assert "main" not in repo.branches()
+
+
+class TestEmptyTree:
+    def test_read_tree_of_empty_hash_does_not_touch_the_store(self, repo):
+        tree = repo.read_tree(EMPTY_TREE_HASH)
+        assert len(tree) == 0
+        assert EMPTY_TREE_HASH not in repo.store
+
+
+class TestCardinality:
+    def test_defaults_when_the_file_is_absent(self, repo):
+        assert repo.cardinality() == CardinalityMap.default_map()
+
+    def test_set_then_get_round_trips(self, repo):
+        repo.set_cardinality(CardinalityMap({"likes": "multi"}))
+        assert repo.cardinality() == CardinalityMap({"likes": "multi"})
+
+    def test_set_writes_atomically_no_lock_left_behind(self, repo):
+        repo.set_cardinality(CardinalityMap({"likes": "multi"}))
+        assert not (repo.memgit_dir / "cardinality.json.lock").exists()
+        assert (repo.memgit_dir / "cardinality.json").is_file()
+
+    def test_malformed_file_raises_clearly(self, repo):
+        (repo.memgit_dir / "cardinality.json").write_text("{not json", encoding="utf-8")
+        with pytest.raises(ValueError):
+            repo.cardinality()
+
+
+class TestDiff:
+    def test_root_commit_diffs_against_the_empty_tree(self, repo):
+        fact = make_fact()
+        commit_hash = repo.commit([fact], "seed")
+        result = repo.diff(after=commit_hash)
+        assert len(result.keys) == 1
+        assert result.keys[0].kind == ChangeKind.ADDED
+
+    def test_diff_resolves_branch_names(self, repo):
+        repo.commit([make_fact()], "seed")
+        repo.create_branch("experiment")
+        result = repo.diff("experiment", "main")
+        assert result.is_empty  # both branches point at the same commit
+
+    def test_use_merge_base_differs_from_direct_diff_on_a_fork(self, repo):
+        repo.commit([make_fact()], "seed")
+        repo.create_branch("experiment")
+        repo.commit([make_fact(predicate="current_project", object="memgit")], "main-only")
+        repo.refs.detach_head(repo.resolve("experiment"))
+        repo.commit([make_fact(predicate="timezone", object="UTC")], "experiment-only")
+        repo.create_branch("experiment-tip", at="HEAD")
+
+        direct = repo.diff("main", "experiment-tip")
+        via_base = repo.diff("main", "experiment-tip", use_merge_base=True)
+        assert direct.keys != via_base.keys
+
+    def test_use_merge_base_requires_an_explicit_before_revision(self, repo):
+        repo.commit([make_fact()], "seed")
+        with pytest.raises(ValueError):
+            repo.diff(use_merge_base=True)
