@@ -111,6 +111,221 @@ class TestMergeJoin:
         assert len(result) == 1
 
 
+class TestSingleValuedClassification:
+    def test_new_key_is_added(self):
+        after, reader = tree_and_reader(make_fact())
+        result = diff_trees(Tree(()), after, reader)
+        assert result.keys[0].kind == ChangeKind.ADDED
+
+    def test_vanished_key_is_removed(self):
+        before, reader = tree_and_reader(make_fact())
+        result = diff_trees(before, Tree(()), reader)
+        assert result.keys[0].kind == ChangeKind.REMOVED
+
+    def test_identical_hash_lists_are_unchanged_with_zero_reads(self):
+        fact = make_fact()
+        tree = Tree.from_facts([fact])
+        reader = CountingFactReader({fact.hash: fact})
+        result = diff_trees(tree, tree, reader)
+        assert result.is_empty
+        assert reader.calls == 0
+
+    def test_reaffirmed_with_higher_confidence(self):
+        before_fact = make_fact(confidence=0.70)
+        after_fact = make_fact(confidence=0.95)
+        before = Tree.from_facts([before_fact])
+        after = Tree.from_facts([after_fact])
+        reader = CountingFactReader({before_fact.hash: before_fact, after_fact.hash: after_fact})
+
+        result = diff_trees(before, after, reader)
+        kd = result.keys[0]
+        assert kd.kind == ChangeKind.REAFFIRMED
+        value = kd.changed_values[0]
+        assert value.kind == ValueKind.REAFFIRMED
+        assert value.confidence_delta == pytest.approx(0.25)
+        assert value.is_strengthened
+
+    def test_reaffirmed_when_only_asserted_at_differs(self):
+        before_fact = make_fact(asserted_at="2026-01-01T00:00:00+00:00")
+        after_fact = make_fact(asserted_at="2026-02-01T00:00:00+00:00")
+        before = Tree.from_facts([before_fact])
+        after = Tree.from_facts([after_fact])
+        reader = CountingFactReader({before_fact.hash: before_fact, after_fact.hash: after_fact})
+
+        result = diff_trees(before, after, reader)
+        kd = result.keys[0]
+        assert kd.kind == ChangeKind.REAFFIRMED
+        assert kd.changed_values[0].confidence_delta == 0.0
+
+    def test_reaffirmed_when_only_source_text_differs(self):
+        before_fact = make_fact(source_text="original")
+        after_fact = make_fact(source_text="rephrased")
+        before = Tree.from_facts([before_fact])
+        after = Tree.from_facts([after_fact])
+        reader = CountingFactReader({before_fact.hash: before_fact, after_fact.hash: after_fact})
+
+        result = diff_trees(before, after, reader)
+        assert result.keys[0].kind == ChangeKind.REAFFIRMED
+
+    def test_replaced_value_is_contradicted(self):
+        vim = make_fact(predicate="favorite_editor", object="vim")
+        neovim = make_fact(predicate="favorite_editor", object="neovim")
+        before = Tree.from_facts([vim])
+        after = Tree.from_facts([neovim])
+        reader = CountingFactReader({vim.hash: vim, neovim.hash: neovim})
+
+        result = diff_trees(before, after, reader)
+        kd = result.keys[0]
+        assert kd.kind == ChangeKind.CONTRADICTED
+        kinds = {v.kind for v in kd.values}
+        assert kinds == {ValueKind.REMOVED, ValueKind.ADDED}
+
+    def test_rival_value_added_is_also_contradicted_and_a_violation(self):
+        vim = make_fact(predicate="favorite_editor", object="vim")
+        neovim = make_fact(predicate="favorite_editor", object="neovim")
+        before = Tree.from_facts([vim])
+        after = Tree.from_entries([("user", "favorite_editor", [vim.hash, neovim.hash])])
+        reader = CountingFactReader({vim.hash: vim, neovim.hash: neovim})
+
+        result = diff_trees(before, after, reader)
+        kd = result.keys[0]
+        assert kd.kind == ChangeKind.CONTRADICTED
+        assert len(result.violations) == 1
+        assert result.violations[0].side == "after"
+        assert set(result.violations[0].objects) == {"vim", "neovim"}
+
+    def test_narrowing_two_values_to_one_is_value_removed_and_a_violation(self):
+        vim = make_fact(predicate="favorite_editor", object="vim")
+        neovim = make_fact(predicate="favorite_editor", object="neovim")
+        before = Tree.from_entries([("user", "favorite_editor", [vim.hash, neovim.hash])])
+        after = Tree.from_facts([vim])
+        reader = CountingFactReader({vim.hash: vim, neovim.hash: neovim})
+
+        result = diff_trees(before, after, reader)
+        kd = result.keys[0]
+        assert kd.kind == ChangeKind.VALUE_REMOVED
+        assert len(result.violations) == 1
+        assert result.violations[0].side == "before"
+
+
+class TestMultiValuedClassification:
+    MULTI = CardinalityMap({"likes": "multi"})
+
+    def test_gained_value_is_value_added(self):
+        chess = make_fact(predicate="likes", object="chess")
+        go = make_fact(predicate="likes", object="go")
+        before = Tree.from_facts([chess])
+        after = Tree.from_facts([chess, go])
+        reader = CountingFactReader({chess.hash: chess, go.hash: go})
+
+        result = diff_trees(before, after, reader, cardinality=self.MULTI)
+        kd = result.keys[0]
+        assert kd.kind == ChangeKind.VALUE_ADDED
+        assert not result.violations
+
+    def test_lost_value_is_value_removed(self):
+        chess = make_fact(predicate="likes", object="chess")
+        go = make_fact(predicate="likes", object="go")
+        before = Tree.from_facts([chess, go])
+        after = Tree.from_facts([chess])
+        reader = CountingFactReader({chess.hash: chess, go.hash: go})
+
+        result = diff_trees(before, after, reader, cardinality=self.MULTI)
+        assert result.keys[0].kind == ChangeKind.VALUE_REMOVED
+
+    def test_gained_and_lost_is_mixed(self):
+        chess = make_fact(predicate="likes", object="chess")
+        go = make_fact(predicate="likes", object="go")
+        rust = make_fact(predicate="likes", object="rust")
+        before = Tree.from_facts([chess, go])
+        after = Tree.from_facts([chess, rust])
+        reader = CountingFactReader({chess.hash: chess, go.hash: go, rust.hash: rust})
+
+        result = diff_trees(before, after, reader, cardinality=self.MULTI)
+        kd = result.keys[0]
+        assert kd.kind == ChangeKind.MIXED
+        kinds = {v.kind for v in kd.changed_values}
+        assert kinds == {ValueKind.ADDED, ValueKind.REMOVED}
+
+    def test_value_replaced_entirely_is_mixed_not_contradicted(self):
+        go = make_fact(predicate="likes", object="go")
+        rust = make_fact(predicate="likes", object="rust")
+        before = Tree.from_facts([go])
+        after = Tree.from_facts([rust])
+        reader = CountingFactReader({go.hash: go, rust.hash: rust})
+
+        result = diff_trees(before, after, reader, cardinality=self.MULTI)
+        assert result.keys[0].kind == ChangeKind.MIXED
+
+    def test_one_of_two_reaffirmed_key_is_reaffirmed(self):
+        chess = make_fact(predicate="likes", object="chess", confidence=0.5)
+        chess2 = make_fact(predicate="likes", object="chess", confidence=0.9)
+        go = make_fact(predicate="likes", object="go")
+        before = Tree.from_facts([chess, go])
+        after = Tree.from_facts([chess2, go])
+        reader = CountingFactReader({chess.hash: chess, chess2.hash: chess2, go.hash: go})
+
+        result = diff_trees(before, after, reader, cardinality=self.MULTI)
+        kd = result.keys[0]
+        assert kd.kind == ChangeKind.REAFFIRMED
+        kinds = {v.kind for v in kd.values}
+        assert kinds == {ValueKind.REAFFIRMED, ValueKind.UNCHANGED}
+
+    def test_cardinality_is_the_only_variable_pinning_test(self):
+        """Same two trees, both cardinalities: kind differs, values don't."""
+        go = make_fact(predicate="likes", object="go")
+        rust = make_fact(predicate="likes", object="rust")
+        before = Tree.from_facts([go])
+        after_single = Tree.from_entries([("user", "likes", [go.hash, rust.hash])])
+        reader = CountingFactReader({go.hash: go, rust.hash: rust})
+
+        single_result = diff_trees(before, after_single, reader, cardinality=CardinalityMap.default_map())
+        multi_result = diff_trees(before, after_single, reader, cardinality=self.MULTI)
+
+        assert single_result.keys[0].kind == ChangeKind.CONTRADICTED
+        assert multi_result.keys[0].kind == ChangeKind.VALUE_ADDED
+        assert single_result.keys[0].values == multi_result.keys[0].values
+
+
+class TestMixedAndPrecedence:
+    def test_add_remove_and_reaffirm_at_one_multi_key(self):
+        chess = make_fact(predicate="likes", object="chess", confidence=0.5)
+        chess2 = make_fact(predicate="likes", object="chess", confidence=0.9)
+        go = make_fact(predicate="likes", object="go")
+        rust = make_fact(predicate="likes", object="rust")
+        before = Tree.from_facts([chess, go])
+        after = Tree.from_facts([chess2, rust])
+        reader = CountingFactReader({f.hash: f for f in (chess, chess2, go, rust)})
+
+        result = diff_trees(before, after, reader, cardinality=CardinalityMap({"likes": "multi"}))
+        kd = result.keys[0]
+        assert kd.kind == ChangeKind.MIXED
+        kinds = {v.kind for v in kd.values}
+        assert kinds == {ValueKind.REAFFIRMED, ValueKind.ADDED, ValueKind.REMOVED}
+
+    def test_add_and_reaffirm_at_single_key_is_contradicted_not_mixed(self):
+        vim = make_fact(predicate="favorite_editor", object="vim", confidence=0.5)
+        vim2 = make_fact(predicate="favorite_editor", object="vim", confidence=0.9)
+        neovim = make_fact(predicate="favorite_editor", object="neovim")
+        before = Tree.from_facts([vim])
+        after = Tree.from_entries([("user", "favorite_editor", [vim2.hash, neovim.hash])])
+        reader = CountingFactReader({f.hash: f for f in (vim, vim2, neovim)})
+
+        result = diff_trees(before, after, reader)
+        assert result.keys[0].kind == ChangeKind.CONTRADICTED
+
+    def test_values_are_sorted_by_object(self):
+        chess = make_fact(predicate="likes", object="chess")
+        go = make_fact(predicate="likes", object="go")
+        before = Tree.from_facts([])
+        after = Tree.from_facts([go, chess])
+        reader = CountingFactReader({chess.hash: chess, go.hash: go})
+
+        result = diff_trees(before, after, reader)
+        objects = [v.object for v in result.keys[0].values]
+        assert objects == sorted(objects)
+
+
 class TestEmptyTreeDiff:
     def test_empty_before_all_added(self):
         fact = make_fact()
