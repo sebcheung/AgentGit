@@ -45,8 +45,9 @@ from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from memgit.core.cardinality import CardinalityMap
 from memgit.core.commit import Commit
+from memgit.core.diff import Diff, diff_trees
 from memgit.core.fact import Fact
-from memgit.core.graph import walk
+from memgit.core.graph import merge_base, walk
 from memgit.core.refs import Head, RefStore
 from memgit.core.store import ObjectStore, is_object_hash
 from memgit.core.tree import EMPTY_TREE_HASH, Tree
@@ -258,6 +259,10 @@ class Repository:
         for _commit_hash, commit in walk(start_hash, self.read_commit, limit=limit):
             yield commit
 
+    def read_fact(self, fact_hash: str) -> Fact:
+        """Load the fact stored at ``fact_hash``. The ``FactReader`` ``diff()`` uses."""
+        return Fact.from_dict(self.store.get(fact_hash))
+
     # -- cardinality ---------------------------------------------------------
 
     def cardinality(self) -> CardinalityMap:
@@ -278,6 +283,55 @@ class Repository:
         lock = path.with_name(path.name + ".lock")
         lock.write_text(json.dumps(mapping.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
         lock.replace(path)
+
+    # -- diff ------------------------------------------------------------
+
+    def diff(
+        self,
+        before: str | None = None,
+        after: str = "HEAD",
+        *,
+        include_unchanged: bool = False,
+        use_merge_base: bool = False,
+    ) -> Diff:
+        """Compare two memory states.
+
+        Args:
+            before: A revision, or ``None`` for the empty tree — "believe
+                nothing" — which is what a root commit is diffed against.
+                Defaults to ``after``'s first parent (empty tree for a root
+                commit) rather than requiring the caller to know that.
+            after: A revision. Defaults to ``HEAD``.
+            use_merge_base: Diff ``after`` against ``merge_base(before, after)``
+                instead of ``before`` directly — the honest comparison for two
+                branches that have diverged, since a direct diff would also
+                report facts ``before`` simply hasn't received yet.
+        """
+        after_hash = self.resolve(after)
+
+        if before is None:
+            after_commit = self.read_commit(after_hash)
+            before_hash = after_commit.parents[0] if after_commit.parents else None
+        else:
+            before_hash = self.resolve(before)
+
+        if use_merge_base:
+            if before_hash is None:
+                raise ValueError(
+                    "use_merge_base requires two explicit revisions, not the implicit parent"
+                )
+            before_hash = merge_base(before_hash, after_hash, self.read_commit)
+
+        before_tree = self.read_tree(before_hash) if before_hash is not None else Tree(())
+        after_tree = self.read_tree(after_hash)
+
+        return diff_trees(
+            before_tree,
+            after_tree,
+            self.read_fact,
+            cardinality=self.cardinality(),
+            include_unchanged=include_unchanged,
+        )
 
     # -- writing -------------------------------------------------------
 
