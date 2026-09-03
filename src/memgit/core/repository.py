@@ -35,30 +35,79 @@ reverse order could leave a ref pointing at an object that was never written,
 which is corruption a reader can't recover from. This ordering is the whole
 safety argument for :meth:`Repository.commit`, and it is why the sequence
 below is fixed rather than incidental.
+
+**Checkout is only a HEAD move.** Git's checkout is dangerous because it
+rewrites files that might hold uncommitted work; MemGit has no working tree
+and no index (see PLAN.md's "decisions locked in"), so there is no
+uncommitted state a checkout could ever clobber. :meth:`checkout` therefore
+never needs ``--force`` and never merges anything — it validates a revision,
+then moves HEAD, attached or detached.
+
+**Rewind, not reset, is the primary way to go back.** :meth:`rewind`
+re-commits a past state forward as a new commit — non-destructive, and
+attributable in the log like anything else. :meth:`reset` is the destructive
+alternative that moves a branch pointer and leaves the abandoned commits
+unreferenced (recoverable via the reflog, otherwise harmless garbage, per the
+same ordering argument above). A debugging tool should default to keeping
+the evidence, which is why ``rewind`` exists at all rather than only
+``reset`` — see each method's docstring for the full argument.
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from memgit.core.cardinality import CardinalityMap
 from memgit.core.commit import Commit
 from memgit.core.diff import Diff, diff_trees
-from memgit.core.fact import Fact
+from memgit.core.fact import Fact, FactKey
 from memgit.core.graph import merge_base, walk
+from memgit.core.reflog import RefLog, RefLogger, ReflogNotFoundError
 from memgit.core.refs import Head, RefStore
-from memgit.core.store import ObjectStore, is_object_hash
+from memgit.core.revparse import AncestryError, RevSyntaxError, apply_steps, parse_revision
+from memgit.core.state import MemoryState
+from memgit.core.store import (
+    AmbiguousPrefixError,
+    ObjectNotFoundError,
+    ObjectStore,
+    is_object_hash,
+)
 from memgit.core.tree import EMPTY_TREE_HASH, Tree
 
 __all__ = [
     "Repository",
+    "CheckoutResult",
     "NotARepositoryError",
     "RepositoryExistsError",
     "RevisionNotFoundError",
     "EmptyCommitError",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class CheckoutResult:
+    """What :meth:`Repository.checkout` did.
+
+    Deliberately carries no diff of its own — computing one costs a fact read
+    per hash, and checkout is the fast path slice 5 will call every turn. A
+    caller that wants to show what changed asks for
+    ``repo.diff(previous.commit, head.commit)`` itself.
+    """
+
+    previous: Head
+    head: Head
+    created_branch: str | None = None
+
+    @property
+    def detached(self) -> bool:
+        return self.head.is_detached
+
+    @property
+    def moved(self) -> bool:
+        return self.previous.commit != self.head.commit
 
 _CONFIG_NAME = "config"
 _HEAD_NAME = "HEAD"
@@ -175,7 +224,9 @@ class Repository:
     @property
     def refs(self) -> RefStore:
         if self._refs is None:
-            self._refs = RefStore(self.memgit_dir)
+            author = self.config().get("author", "unknown")
+            logger = RefLogger(self.memgit_dir, author=author)
+            self._refs = RefStore(self.memgit_dir, logger=logger)
         return self._refs
 
     def config(self) -> dict[str, Any]:
@@ -199,13 +250,60 @@ class Repository:
     def resolve(self, revision: str = "HEAD") -> str:
         """Resolve ``revision`` to a commit hash.
 
+        Beyond a plain ``HEAD`` / branch name / full hash (``RefStore``'s own
+        job), this also understands ancestry suffixes (``HEAD~3``,
+        ``main^2``), reflog indexing (``HEAD@{1}``), and abbreviated hash
+        prefixes — see ``revparse.py`` for the grammar. Every failure mode
+        collapses into :class:`RevisionNotFoundError` so no CLI command needs
+        to know which of the underlying pieces produced it.
+
         Raises:
             RevisionNotFoundError: ``revision`` does not name anything.
         """
-        resolved = self.refs.resolve(revision)
-        if resolved is None:
-            raise RevisionNotFoundError(revision)
-        return resolved
+        try:
+            expr = parse_revision(revision)
+        except RevSyntaxError as exc:
+            raise RevisionNotFoundError(revision) from exc
+
+        if expr.reflog_index is not None:
+            ref_name = self._reflog_ref_name(expr.base)
+            try:
+                base_hash = RefLog(self.memgit_dir, ref_name).at(expr.reflog_index)
+            except ReflogNotFoundError as exc:
+                raise RevisionNotFoundError(revision) from exc
+        else:
+            base_hash = self._resolve_base(expr.base)
+
+        try:
+            return apply_steps(base_hash, expr.steps, self.read_commit)
+        except AncestryError as exc:
+            raise RevisionNotFoundError(revision) from exc
+
+    @staticmethod
+    def _reflog_ref_name(base: str) -> str:
+        """Map a revparse base to the ref name its reflog lives under."""
+        if base == "HEAD" or base.startswith("refs/"):
+            return base
+        return f"refs/heads/{base}"
+
+    def _resolve_base(self, base: str) -> str:
+        """Resolve a bare base (no ancestry suffix, no reflog index).
+
+        Tries ``RefStore``'s own resolution first (HEAD, a full hash, a full
+        ref path, a bare branch name), then — only as a last resort, so an
+        existing branch name is never shadowed — an abbreviated hash prefix.
+        """
+        resolved = self.refs.resolve(base)
+        if resolved is not None:
+            return resolved
+        if is_object_hash(base):
+            raise RevisionNotFoundError(base)
+        try:
+            return self.store.resolve_prefix(base)
+        except AmbiguousPrefixError as exc:
+            raise RevisionNotFoundError(f"{base!r} is ambiguous: {exc}") from exc
+        except (ValueError, ObjectNotFoundError) as exc:
+            raise RevisionNotFoundError(base) from exc
 
     def branches(self) -> dict[str, str]:
         """Every local branch, mapped to the commit hash it points at."""
@@ -217,7 +315,9 @@ class Repository:
     def create_branch(self, name: str, at: str = "HEAD") -> str:
         """Create branch ``name`` pointing at ``at``; return its commit hash."""
         target = self.resolve(at)
-        self.refs.write_ref(f"refs/heads/{name}", target, expect=None)
+        self.refs.write_ref(
+            f"refs/heads/{name}", target, expect=None, op="branch", reason=f"created from {at}"
+        )
         return target
 
     def delete_branch(self, name: str, *, force: bool = False) -> None:
@@ -229,7 +329,7 @@ class Repository:
         """
         if not force and self.current_branch() == name:
             raise ValueError(f"cannot delete the current branch {name!r}")
-        self.refs.delete_ref(f"refs/heads/{name}")
+        self.refs.delete_ref(f"refs/heads/{name}", op="branch", reason="branch deleted")
 
     # -- reading -----------------------------------------------------------
 
@@ -392,12 +492,204 @@ class Repository:
 
         head = self.head()
         if head.is_detached:
-            self.refs.detach_head(new_hash)
+            self.refs.detach_head(new_hash, op="commit", reason=new_commit.summary)
         else:
             assert head.ref is not None
-            self.refs.write_ref(head.ref, new_hash, expect=head.commit)
+            self.refs.write_ref(
+                head.ref, new_hash, expect=head.commit, op="commit", reason=new_commit.summary
+            )
 
         return new_hash
+
+    # -- checkout, rewind and reset -----------------------------------------
+
+    def _existing_branch_ref(self, base: str) -> str | None:
+        """The full ref path for ``base`` if it names a branch, else ``None``.
+
+        A branch "exists" here even if it is unborn (HEAD points at it, but
+        it has no ref file yet, since a ref file is only written on its first
+        commit) — checking out the branch you are already on must still
+        attach, not detach.
+        """
+        ref_name = base if base.startswith("refs/") else f"refs/heads/{base}"
+        if self.refs.read_ref(ref_name) is not None:
+            return ref_name
+        current = self.head()
+        if not current.is_detached and current.ref == ref_name:
+            return ref_name
+        return None
+
+    def checkout(
+        self,
+        revision: str = "HEAD",
+        *,
+        create: str | None = None,
+        detach: bool = False,
+    ) -> "CheckoutResult":
+        """Move HEAD to ``revision``.
+
+        See the module docstring for why this is *only* a HEAD move: no
+        working tree and no index means nothing is ever at risk of being
+        overwritten, so there is no ``--force`` and no merge here.
+
+        Args:
+            create: Create this branch at ``revision`` first, then attach to
+                it — mirrors ``git checkout -b``. If the repository is
+                unborn and ``revision`` (default ``"HEAD"``) resolves to
+                nothing, the new branch is left unborn too, matching
+                ``git init && git checkout -b x``.
+            detach: Force a detached checkout even when ``revision`` names a
+                branch — mirrors ``git checkout --detach``.
+
+        Raises:
+            RevisionNotFoundError: ``revision`` does not resolve (unless
+                ``create`` is given and the repository is simply unborn).
+        """
+        previous = self.head()
+
+        if create is not None:
+            try:
+                self.create_branch(create, at=revision)
+            except RevisionNotFoundError:
+                pass  # unborn: nothing to point the new branch at yet
+            self.refs.set_head(
+                f"refs/heads/{create}", op="checkout", reason=f"checkout -b {create} from {revision}"
+            )
+            return CheckoutResult(previous=previous, head=self.head(), created_branch=create)
+
+        if detach:
+            self.refs.detach_head(
+                self.resolve(revision), op="checkout", reason=f"checkout {revision} (detach)"
+            )
+            return CheckoutResult(previous=previous, head=self.head())
+
+        expr = parse_revision(revision)
+        branch_ref = self._existing_branch_ref(expr.base) if expr.is_bare else None
+        if branch_ref is not None:
+            self.refs.set_head(branch_ref, op="checkout", reason=f"checkout {revision}")
+        else:
+            # Not a bare branch name (e.g. "main~1"), or names no branch at
+            # all: detach, even if the base happens to be a branch — is_bare
+            # is exactly the distinction between "the branch" and "an
+            # ancestor of it".
+            self.refs.detach_head(self.resolve(revision), op="checkout", reason=f"checkout {revision}")
+
+        return CheckoutResult(previous=previous, head=self.head())
+
+    def rewind(
+        self,
+        revision: str,
+        message: str | None = None,
+        *,
+        author: str = "unknown",
+        keys: Sequence[FactKey] | None = None,
+        allow_empty: bool = False,
+    ) -> str:
+        """Re-commit ``revision``'s memory state forward onto HEAD.
+
+        The primary, non-destructive way to "go back": the rewind is itself
+        a new commit, visible in ``log`` and diffable like any other change,
+        rather than history quietly disappearing. See the module docstring
+        for the full argument against making :meth:`reset` the default
+        instead.
+
+        Args:
+            revision: The past memory state to bring forward.
+            message: Commit message. Defaults to naming what was rewound.
+            keys: If given, overlay only these ``(subject, predicate)`` keys
+                from ``revision``'s tree onto HEAD's current tree, instead of
+                replacing the whole state — "put back just this one belief",
+                which slice 6's ablation engine needs first. A key from
+                ``revision`` that HEAD doesn't have is added; a key omitted
+                from ``revision`` (whose keys are given) is not itself
+                removed unless explicitly listed.
+            allow_empty: Passed through to :meth:`commit`.
+
+        Raises:
+            RevisionNotFoundError: ``revision`` does not resolve.
+            EmptyCommitError: The rewind would not change anything.
+        """
+        target_hash = self.resolve(revision)
+        target_tree = self.read_tree(target_hash)
+
+        if keys is None:
+            facts = target_tree.load(self.store)
+        else:
+            current_tree = self.read_tree("HEAD") if self.head_commit() is not None else Tree(())
+            by_key = target_tree.by_key()
+            merged_tree = current_tree
+            for key in keys:
+                if key in by_key:
+                    merged_tree = merged_tree.with_key(key, by_key[key])
+                else:
+                    merged_tree = merged_tree.without_key(key)
+            facts = merged_tree.load(self.store)
+
+        if message is None:
+            message = f"rewind memory to {revision} ({target_hash[:8]})"
+
+        return self.commit(
+            facts,
+            message,
+            author=author,
+            metadata={"rewind_of": target_hash, "rewind_from": revision},
+            allow_empty=allow_empty,
+        )
+
+    def reset(self, revision: str, *, branch: str | None = None) -> str:
+        """Move a branch to point at ``revision`` — destructive.
+
+        With no working tree and no index, git's ``--soft``/``--mixed``/
+        ``--hard`` split collapses into this one operation: there is no
+        uncommitted state for the distinction to apply to. Commits solely
+        reachable from the branch's old position become unreachable (not
+        deleted — harmless garbage per the module docstring's ordering
+        argument, and recoverable via the reflog while it still holds the
+        old value). Prefer :meth:`rewind` unless the history itself needs to
+        change, not just the memory state.
+
+        Args:
+            branch: Which branch to move. Defaults to HEAD's own branch, or
+                moves HEAD directly if it is detached.
+
+        Raises:
+            RevisionNotFoundError: ``revision`` does not resolve.
+            ValueError: HEAD is unborn and no ``branch`` was given.
+        """
+        target_hash = self.resolve(revision)
+        head = self.head()
+
+        if branch is not None:
+            ref_name = f"refs/heads/{branch}"
+            current = self.refs.read_ref(ref_name)
+            self.refs.write_ref(
+                ref_name, target_hash, expect=current, op="reset", reason=f"reset to {revision}"
+            )
+            return target_hash
+
+        if head.is_detached:
+            self.refs.detach_head(target_hash, op="reset", reason=f"reset to {revision}")
+            return target_hash
+
+        if head.commit is None:
+            raise ValueError("cannot reset: HEAD is unborn and no branch was given")
+
+        assert head.ref is not None
+        self.refs.write_ref(
+            head.ref, target_hash, expect=head.commit, op="reset", reason=f"reset to {revision}"
+        )
+        return target_hash
+
+    # -- memory state --------------------------------------------------------
+
+    def state(self, rev: str = "HEAD") -> MemoryState:
+        """Materialize the full memory state at ``rev``.
+
+        ``rev`` follows the same resolution rules as everywhere else: HEAD,
+        a branch, an ancestry expression, or a commit/tree hash directly.
+        """
+        tree = self.read_tree(rev)
+        return MemoryState.from_tree(tree, self.read_fact, commit=self.resolve(rev))
 
     def __repr__(self) -> str:
         return f"Repository({str(self.memgit_dir)!r})"
