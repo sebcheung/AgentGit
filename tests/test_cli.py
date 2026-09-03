@@ -197,10 +197,11 @@ class TestDiff:
         assert "favorite_editor" in result.output
 
     def test_three_dot_range_parses_and_uses_merge_base(self, tmp_path):
-        # There's no `checkout` yet (slice 4), so the CLI alone can't build a
-        # forked history to compare two- vs three-dot output against; this
-        # just proves the "..." syntax parses and takes the --merge-base path
-        # rather than erroring, on a trivial (already-equal) pair of branches.
+        # A trivial (already-equal) pair of branches is enough to prove the
+        # "..." syntax parses and takes the --merge-base path rather than
+        # erroring; a genuinely forked history is exercised in
+        # TestDiff.test_use_merge_base_differs_from_direct_diff_on_a_fork
+        # over in test_repository.py.
         _init_and_commit(tmp_path)
         runner.invoke(app, ["branch", "experiment"])
         three_dot = runner.invoke(app, ["diff", "main...experiment"])
@@ -287,6 +288,162 @@ class TestShow:
         result = runner.invoke(app, ["show", "HEAD", "--facts"])
         assert result.exit_code == 0
         assert "0.90" in result.output
+
+
+class TestCheckout:
+    def test_checkout_a_commit_detaches(self, tmp_path):
+        first = _init_and_commit(tmp_path)
+        _second_commit(tmp_path)
+        result = runner.invoke(app, ["checkout", first])
+        assert result.exit_code == 0
+        assert "detached" in result.output
+        assert first[:8] in result.output
+
+    def test_checkout_reports_memory_change(self, tmp_path):
+        first = _init_and_commit(tmp_path)
+        _second_commit(tmp_path)
+        result = runner.invoke(app, ["checkout", first])
+        assert "key(s) changed" in result.output
+
+    def test_checkout_a_branch_reattaches(self, tmp_path):
+        _init_and_commit(tmp_path)
+        second = _second_commit(tmp_path)
+        runner.invoke(app, ["checkout", "HEAD~1"])
+        result = runner.invoke(app, ["checkout", "main"])
+        assert result.exit_code == 0
+        assert "Switched to branch 'main'" in result.output
+        status = runner.invoke(app, ["status"])
+        assert "On branch main" in status.output
+
+    def test_checkout_create_branch(self, tmp_path):
+        _init_and_commit(tmp_path)
+        result = runner.invoke(app, ["checkout", "HEAD", "-b", "topic"])
+        assert result.exit_code == 0
+        assert "new branch 'topic'" in result.output
+        status = runner.invoke(app, ["status"])
+        assert "On branch topic" in status.output
+
+    def test_checkout_unknown_revision_fails(self, tmp_path):
+        _init_and_commit(tmp_path)
+        result = runner.invoke(app, ["checkout", "does-not-exist"])
+        assert result.exit_code == 1
+        assert "unknown revision" in result.output
+
+    def test_status_hints_reattachment_when_detached(self, tmp_path):
+        first = _init_and_commit(tmp_path)
+        runner.invoke(app, ["checkout", first])
+        result = runner.invoke(app, ["status"])
+        assert "memgit checkout" in result.output
+
+
+class TestRewind:
+    def test_rewind_prints_a_commit_hash(self, tmp_path):
+        first = _init_and_commit(tmp_path)
+        _second_commit(tmp_path)
+        result = runner.invoke(app, ["rewind", first])
+        assert result.exit_code == 0
+        assert len(result.output.strip()) == 64
+
+    def test_rewound_state_matches_the_target(self, tmp_path):
+        first = _init_and_commit(tmp_path)
+        _second_commit(tmp_path)
+        runner.invoke(app, ["rewind", first, "-m", "roll back"])
+        show = runner.invoke(app, ["show", "HEAD", "--facts"])
+        assert "prefers_language" in show.output
+
+    def test_rewind_a_no_op_fails(self, tmp_path):
+        _init_and_commit(tmp_path)
+        result = runner.invoke(app, ["rewind", "HEAD"])
+        assert result.exit_code == 1
+
+    def test_rewind_unknown_revision_fails(self, tmp_path):
+        _init_and_commit(tmp_path)
+        result = runner.invoke(app, ["rewind", "does-not-exist"])
+        assert result.exit_code == 1
+        assert "unknown revision" in result.output
+
+    def test_rewind_bad_key_flag_fails(self, tmp_path):
+        first = _init_and_commit(tmp_path)
+        _second_commit(tmp_path)
+        result = runner.invoke(app, ["rewind", first, "--key", "no-colon-here"])
+        assert result.exit_code == 1
+
+
+class TestReset:
+    def test_reset_moves_the_branch(self, tmp_path):
+        first = _init_and_commit(tmp_path)
+        _second_commit(tmp_path)
+        result = runner.invoke(app, ["reset", first])
+        assert result.exit_code == 0
+        assert first[:8] in result.output
+
+    def test_reset_warns_about_unreachable_commits(self, tmp_path):
+        first = _init_and_commit(tmp_path)
+        _second_commit(tmp_path)
+        result = runner.invoke(app, ["reset", first])
+        assert "no longer reachable" in result.output
+
+    def test_reset_unknown_revision_fails(self, tmp_path):
+        _init_and_commit(tmp_path)
+        result = runner.invoke(app, ["reset", "does-not-exist"])
+        assert result.exit_code == 1
+
+
+class TestReflog:
+    def test_reflog_lists_movements_newest_first(self, tmp_path):
+        first = _init_and_commit(tmp_path)
+        second = _second_commit(tmp_path)
+        result = runner.invoke(app, ["reflog"])
+        assert result.exit_code == 0
+        lines = result.output.strip().splitlines()
+        assert lines[0].startswith(second[:8])
+        assert any(line.startswith(first[:8]) for line in lines)
+
+    def test_reflog_limit(self, tmp_path):
+        _init_and_commit(tmp_path)
+        _second_commit(tmp_path)
+        result = runner.invoke(app, ["reflog", "-n", "1"])
+        assert len(result.output.strip().splitlines()) == 1
+
+
+class TestState:
+    def test_state_lists_facts_at_head(self, tmp_path):
+        _init_and_commit(tmp_path)
+        result = runner.invoke(app, ["state"])
+        assert result.exit_code == 0
+        assert "prefers_language" in result.output
+
+    def test_state_at_an_ancestor(self, tmp_path):
+        _init_and_commit(tmp_path)
+        _second_commit(tmp_path)
+        result = runner.invoke(app, ["state", "HEAD~1"])
+        assert result.exit_code == 0
+        assert "prefers_language" in result.output
+        assert "favorite_editor" not in result.output
+
+    def test_state_render_flag(self, tmp_path):
+        _init_and_commit(tmp_path)
+        result = runner.invoke(app, ["state", "--render"])
+        assert result.exit_code == 0
+        assert "user:" in result.output
+
+    def test_state_json_flag(self, tmp_path):
+        _init_and_commit(tmp_path)
+        result = runner.invoke(app, ["state", "--json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert "facts" in payload
+
+    def test_state_filters_by_subject(self, tmp_path):
+        _init_and_commit(tmp_path)
+        result = runner.invoke(app, ["state", "--subject", "nobody"])
+        assert result.exit_code == 0
+        assert result.output.strip() == ""
+
+    def test_state_unknown_revision_fails(self, tmp_path):
+        _init_and_commit(tmp_path)
+        result = runner.invoke(app, ["state", "does-not-exist"])
+        assert result.exit_code == 1
 
 
 class TestCardinality:

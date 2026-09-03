@@ -65,7 +65,7 @@ from memgit.core.commit import Commit
 from memgit.core.diff import Diff, diff_trees
 from memgit.core.fact import Fact, FactKey
 from memgit.core.graph import merge_base, walk
-from memgit.core.reflog import RefLog, RefLogger, ReflogNotFoundError
+from memgit.core.reflog import RefLog, RefLogEntry, RefLogger, ReflogNotFoundError
 from memgit.core.refs import Head, RefStore
 from memgit.core.revparse import AncestryError, RevSyntaxError, apply_steps, parse_revision
 from memgit.core.state import MemoryState
@@ -679,6 +679,15 @@ class Repository:
             head.ref, target_hash, expect=head.commit, op="reset", reason=f"reset to {revision}"
         )
         return target_hash
+
+    def reflog(self, ref: str = "HEAD") -> tuple[RefLogEntry, ...]:
+        """Every recorded movement of ``ref``, oldest first.
+
+        Empty if the ref exists but has never moved since a logger was
+        attached (or, on a freshly opened repository, if it has moved but
+        the ``.memgit/logs`` directory predates this slice).
+        """
+        return RefLog(self.memgit_dir, self._reflog_ref_name(ref)).entries()
 
     # -- memory state --------------------------------------------------------
 

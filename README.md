@@ -1,9 +1,9 @@
 # MemGit
 
 Version control and time-travel debugging for AI agent memory — snapshot,
-branch, diff, and (soon) rewind what an agent "believed" over time, so you can
-causally explain *why* it behaved the way it did. See [PLAN.md](PLAN.md) for
-the full design and build order.
+branch, diff, checkout, and rewind what an agent "believed" over time, so you
+can causally explain *why* it behaved the way it did. See [PLAN.md](PLAN.md)
+for the full design and build order.
 
 ## Diffing memory
 
@@ -42,6 +42,43 @@ branch simply hasn't received yet. See [PLAN.md](PLAN.md)'s "Decisions locked
 in" for the full change taxonomy and the reasoning behind the cardinality
 map's defaults.
 
+## Checkout and rewind
+
+MemGit has no working tree and no index — the memory state *is* the tree — so
+`memgit checkout` only ever moves HEAD, attached to a branch or detached at a
+commit. There's no `--force`, because there's nothing uncommitted a checkout
+could ever overwrite:
+
+```sh
+$ memgit checkout HEAD~3     # detach at an ancestor
+HEAD is now detached at 8d258c6e
+Memory: 2 key(s) changed
+$ memgit state               # what the agent believed there
+user:
+  prefers_language Python
+$ memgit checkout main       # reattach
+```
+
+Going back to a past belief state has two flavors. `memgit rewind` is
+non-destructive and primary: it re-commits the past state forward as a new
+commit, so the rewind itself is attributable history, not a hole where one
+used to be. `memgit reset` is the destructive alternative — it moves a branch
+pointer and leaves the abandoned commits unreferenced, recoverable via
+`memgit reflog` (`.memgit/logs/HEAD`, `.memgit/logs/refs/heads/*`) while it
+still holds their hash:
+
+```sh
+$ memgit rewind HEAD~3 -m "roll back to before the bad turn"
+$ memgit reflog
+48aa20e9 HEAD@{0}: commit: roll back to before the bad turn
+...
+```
+
+Revisions understand git's ancestry suffixes (`HEAD~3`, `main^2`), reflog
+indexing (`HEAD@{1}`), and abbreviated hashes, on top of `HEAD`/branch names/
+full hashes. See [PLAN.md](PLAN.md)'s "Decisions locked in" for why `rewind`
+rather than `reset` is the default.
+
 ## On-disk layout
 
 MemGit's object store, refs, and HEAD are deliberately laid out like git's,
@@ -56,9 +93,14 @@ from `memgit init && memgit commit`, next to a real `git init && git commit`:
 │   ├── 45/…                       │   ├── 84/84b755be…
 │   ├── 4a/…                       │   ├── ac/a7785f3d…
 │   └── ba/…                       │   └── b1/1d51e54d…
-└── refs/                          └── refs/
-    └── heads/                         └── heads/
-        └── main                           └── main
+├── refs/                          ├── refs/
+│   └── heads/                     │   └── heads/
+│       └── main                   │       └── main
+└── logs/                          └── logs/
+    ├── HEAD                           ├── HEAD
+    └── refs/                          └── refs/
+        └── heads/                         └── heads/
+            └── main                           └── main
 ```
 
 ```sh
