@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -12,7 +13,7 @@ from memgit import __version__
 from memgit.core.commit import Commit
 from memgit.core.diff import ChangeKind, Diff
 from memgit.core.fact import Fact
-from memgit.core.graph import ancestors, is_ancestor
+from memgit.core.graph import ancestors, is_ancestor, walk
 from memgit.core.refs import InvalidRefNameError
 from memgit.core.repository import (
     EmptyCommitError,
@@ -714,6 +715,138 @@ def fsck_cmd() -> None:
         raise typer.Exit(code=1)
 
     typer.secho("all objects verified", fg=typer.colors.GREEN)
+
+
+def _agent_client(model: str) -> Any:
+    """Build the real Anthropic-backed client. The one seam tests monkeypatch.
+
+    Kept as its own function, rather than inlined into :func:`_make_agent`,
+    so a test can replace it with a :class:`~memgit.agent.client.LLMClient`
+    fake without ever importing ``anthropic`` or touching the network.
+    """
+    from memgit.agent.client import default_client
+
+    return default_client(model=model)
+
+
+def _make_agent(repo: Repository, *, model: str, record_empty: bool) -> "MemoryAgent":
+    from memgit.agent.client import AgentError
+    from memgit.agent.runtime import MemoryAgent
+
+    try:
+        client = _agent_client(model)
+    except AgentError as exc:
+        _fail(str(exc))
+        raise  # unreachable
+    return MemoryAgent(repo, client=client, model=model, record_empty=record_empty)
+
+
+def _print_turn_result(repo: Repository, result: "TurnResult") -> None:
+    typer.echo(result.reply)
+    if result.commit is None:
+        typer.secho("(no memory change)", fg=typer.colors.YELLOW, err=True)
+        return
+    commit = repo.read_commit(result.commit)
+    typer.secho(_format_commit_oneline(result.commit, commit), fg=typer.colors.CYAN, err=True)
+    _print_diff_stat(repo.diff(after=result.commit))
+
+
+@app.command("ask")
+def ask_cmd(
+    message: str = typer.Argument(..., help="What to say to the agent."),
+    model: str = typer.Option("claude-opus-5", "--model", help="Model to run the turn with."),
+    record_empty: bool = typer.Option(
+        False, "--record-empty", help="Commit even when the turn remembers nothing."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output."),
+) -> None:
+    """Run one turn against the memory at HEAD, and commit whatever it remembers.
+
+    One call to :class:`~memgit.agent.runtime.MemoryAgent`: the whole memory
+    state at HEAD is shown to the model, ``remember``/``forget`` tool calls
+    are applied, and the result lands as a single commit — unless nothing
+    changed, in which case nothing is committed (see ``--record-empty``).
+    """
+    from memgit.agent.client import AgentError
+
+    repo = _repo()
+    agent = _make_agent(repo, model=model, record_empty=record_empty)
+    try:
+        result = agent.turn(message)
+    except AgentError as exc:
+        _fail(str(exc))
+        return
+
+    if as_json:
+        typer.echo(
+            json.dumps(
+                {"reply": result.reply, "commit": result.commit, "stop_reason": result.stop_reason},
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return
+
+    _print_turn_result(repo, result)
+
+
+@app.command("chat")
+def chat_cmd(
+    model: str = typer.Option("claude-opus-5", "--model", help="Model to run turns with."),
+    record_empty: bool = typer.Option(
+        False, "--record-empty", help="Commit even when a turn remembers nothing."
+    ),
+) -> None:
+    """An interactive REPL against the memory at HEAD.
+
+    Each line is one turn — see :meth:`MemoryAgent.turn`. The chat transcript
+    lives only for this process; what an agent remembers survives only
+    through the commits each turn makes, which is what ``/state`` after a
+    restart demonstrates. ``/state``, ``/log``, ``/diff`` inspect memory
+    without spending a turn; ``/quit`` (or EOF) exits.
+    """
+    repo = _repo()
+    agent = _make_agent(repo, model=model, record_empty=record_empty)
+    typer.echo("memgit chat — /state, /log, /diff, /quit")
+
+    from memgit.agent.client import AgentError
+
+    while True:
+        try:
+            line = input("you> ")
+        except EOFError:
+            break
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped in ("/quit", "/exit"):
+            break
+        if stripped == "/state":
+            if repo.head_commit() is None:
+                typer.echo("No memories recorded yet.")
+            else:
+                typer.echo(repo.state().render())
+            continue
+        if stripped == "/log":
+            if repo.head_commit() is None:
+                typer.echo("No commits yet.")
+            else:
+                for commit_hash, commit in walk(repo.resolve("HEAD"), repo.read_commit, limit=10):
+                    typer.echo(_format_commit_oneline(commit_hash, commit))
+            continue
+        if stripped == "/diff":
+            if repo.head_commit() is None:
+                typer.echo("No commits yet.")
+            else:
+                _print_diff_stat(repo.diff())
+            continue
+
+        try:
+            result = agent.turn(line)
+        except AgentError as exc:
+            typer.secho(str(exc), fg=typer.colors.RED, err=True)
+            continue
+        _print_turn_result(repo, result)
 
 
 cardinality_app = typer.Typer(help="Inspect and edit the diff engine's single/multi schema.")
