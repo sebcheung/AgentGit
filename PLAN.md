@@ -120,8 +120,8 @@ increment, tested before moving on:
 | 2. Commit graph | 3 | ✅ |
 | 3. Diff engine | 4 | ✅ |
 | 4. Checkout / rewind | 5 | ✅ |
-| 5. Agent runtime | 6 | ← next |
-| 6. Replay / ablation | 7 | |
+| 5. Agent runtime | 6 | ✅ |
+| 6. Replay / ablation | 7 | ← next |
 | 7. Retrieval + confidence decay | 8 + 9 (merged) | |
 | 8. MCP server | 10 (moved up — the tool-call fact-write decision makes this nearly the same code as slice 4) | |
 | 9. Eval suite | 11 | |
@@ -155,6 +155,11 @@ Design choices already made and built on, not up for re-litigation without a rea
 | `memgit diff` with no arguments | `HEAD` vs its first parent | There is no working tree and no index (see the staging row), so there is no uncommitted state to diff. "What did the newest turn change?" is the honest analogue and the more useful default. |
 | `merge_base` | Two-source painting + a reduce pass; `merge_bases` returns all candidates, `merge_base` picks one deterministically by date | Needed by `diff a...b`, the honest question for branch attribution: a direct two-dot diff would also report facts one branch simply hasn't received yet. Inherits `walk`'s clock-skew caveat; a synthesized virtual merge base for criss-cross histories would need a merge algorithm MemGit has no slice for, so multi-candidate ambiguity is surfaced rather than resolved. |
 | LLM | Anthropic API, `claude-opus-5`, Python SDK | |
+| Agent tool surface | `remember` and `forget` only — no `reaffirm`, no `recall` | `remember` is the locked-in write path; a second `remember` of the same triple at a new confidence already reads as a reaffirmation, so a separate `reaffirm` verb would just be a second way to say the same thing and a chance to pick the wrong one. `recall` earns its place once slice 7 replaces full-context injection with scoped retrieval — until then the whole state is already in the prompt, and a second read path would let the model act on facts it was never shown. `forget` stays because retraction (`removed`/`value_removed`) is not expressible as any `remember`. |
+| `remember` at an existing key | The repo's cardinality map decides: `single` replaces, `multi` adds alongside | `Tree` maps one key to a *list* of hashes; without this rule every `single` predicate would accumulate rivals and every diff would report a cardinality violation. Consulting the map at write time does not re-litigate "a diff is a question you ask, not data you store" — the runtime is a client of that repo-local lens exactly as `memgit diff` is, and the write itself is neither hashed nor committed. |
+| Agent commit messages | Derived from the applied ops and the query, never model-authored | A model-authored message can disagree with what the diff actually shows. In a tool whose premise is trustworthy history, a terse derived message beats a plausible but possibly-wrong one. |
+| Agent turn granularity | One turn = one commit, written once after the tool-calling loop ends, `allow_empty` off by default | A turn is the unit a human attributes; per-tool-call commits would record beliefs the model revises within the same turn, and an API failure mid-loop would leave memory half-written. A turn that remembers nothing produces no commit unless `--record-empty` is passed — `EmptyCommitError`'s own docstring calls recording no-ops "a deliberate choice for that caller to make," not a default, since it would fill the log with identical trees from every chit-chat turn. |
+| Transcript vs. memory | The chat transcript lives only in-process, for one `MemoryAgent`; it is never committed | Persisting it would be exactly the "mutable, uncommitted, unhashed state" the no-index decision above already refuses. Memory crosses a process boundary through commits, not through the transcript — each turn re-reads `HEAD` and rebuilds the system prompt from it, so a fact remembered in one `memgit chat` invocation reaches the next. |
 
 ---
 

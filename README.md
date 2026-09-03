@@ -117,6 +117,32 @@ packed objects, no `index`/staging area (see [PLAN.md](PLAN.md)'s "Decisions
 locked in" for why) — is called out explicitly there rather than left as a
 silent gap.
 
+## Talking to it
+
+`memgit ask` and `memgit chat` run a real `claude-opus-5` turn against the
+memory at `HEAD`. The whole state is shown to the model; `remember` and
+`forget` are the only tools it can call to change it; whatever it decides
+lands as one commit — unless it decides nothing, in which case nothing is
+committed:
+
+```sh
+$ memgit ask "I mostly write Python, and my timezone is Europe/Berlin."
+Got it — noted both.
+a1b2c3d4 turn: I mostly write Python, and my timezone is Europe/Berlin.
+2 key(s) changed: 2 added
+$ memgit ask "What language do I prefer?"
+You prefer Python.
+(no memory change)
+```
+
+The second `ask` answers correctly without creating a commit — memory
+crossed the process boundary through the commit graph, not through a chat
+transcript, which is the property this whole project is built to make
+inspectable. `memgit chat` is the same turn loop as a REPL, with `/state`,
+`/log`, and `/diff` to look without spending a turn. See `PLAN.md`'s
+"Decisions locked in" for why the tool surface is exactly `remember` and
+`forget`, and why commit messages are derived rather than model-authored.
+
 ## Quickstart
 
 ```sh
