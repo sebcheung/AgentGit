@@ -17,9 +17,15 @@ the capability now rather than later means there is only ever one HEAD format
 existing repositories have to speak — the alternative is a migration the day
 detached HEAD is introduced.
 
-**Every ref write goes through one function.** That is what makes slice 4's
-reflog a hook added to :meth:`RefStore.write_ref` rather than a grep-and-patch
-across every call site that ever moves a ref.
+**Every ref write goes through one function — almost.** ``write_ref`` is the
+single chokepoint for *branch* refs, which is what makes attaching a reflog
+there cheap rather than a grep-and-patch across every call site that ever
+moves one. HEAD is not fully covered by that: :meth:`set_head` and
+:meth:`detach_head` move HEAD without calling ``write_ref`` at all, and
+:meth:`delete_ref` removes a ref no write ever touches again. Slice 4's
+reflog (``reflog.py``) is therefore a hook on all four of this module's
+writers, not just one, plus a "did this write also move HEAD" check in
+``write_ref`` — see :class:`RefStore`'s ``logger`` argument.
 
 Ref names reach the filesystem, so they get the same scrutiny
 ``ObjectStore._path_for`` gives hashes: a ref name is untrusted input the
@@ -32,9 +38,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from memgit.core.store import is_object_hash
+
+if TYPE_CHECKING:
+    from memgit.core.reflog import RefLogger
 
 __all__ = [
     "Head",
@@ -127,10 +136,17 @@ class RefStore:
     Args:
         memgit_dir: The repository's ``.memgit`` directory. Refs live at
             ``memgit_dir/refs/...``; HEAD at ``memgit_dir/HEAD``.
+        logger: If given, every write below appends a :class:`RefLogEntry` to
+            ``.memgit/logs/...`` via this logger, unconditionally — matching
+            git's ``core.logallrefupdates``, so nothing has to remember to
+            opt in. ``None`` (the default) keeps a ``RefStore`` exactly as
+            silent as it was before this slice, which is what lets every
+            existing test construct one with no logger at all.
     """
 
-    def __init__(self, memgit_dir: Path) -> None:
+    def __init__(self, memgit_dir: Path, *, logger: "RefLogger | None" = None) -> None:
         self.memgit_dir = Path(memgit_dir)
+        self._logger = logger
 
     # -- plain refs ----------------------------------------------------------
 
@@ -150,7 +166,15 @@ class RefStore:
             return None
         return path.read_text(encoding="utf-8").strip()
 
-    def write_ref(self, name: str, commit: str, *, expect: Any = _UNSET) -> None:
+    def write_ref(
+        self,
+        name: str,
+        commit: str,
+        *,
+        expect: Any = _UNSET,
+        op: str = "update-ref",
+        reason: str = "",
+    ) -> None:
         """Point ``name`` at ``commit``, atomically.
 
         Args:
@@ -158,6 +182,9 @@ class RefStore:
                 value equals ``expect`` (``None`` meaning "must not exist yet").
                 This compare-and-swap is what lets a future fast-forward check
                 be expressed without redesigning this method.
+            op: Short verb recorded in the reflog (e.g. ``"commit"``,
+                ``"branch"``, ``"reset"``). Ignored if no logger is attached.
+            reason: Free-text reflog message. Ignored if no logger is attached.
 
         Raises:
             ValueError: ``commit`` is not a valid object hash, or ``expect``
@@ -167,22 +194,37 @@ class RefStore:
             raise ValueError(f"ref target must be a valid object hash, got {commit!r}")
 
         path = self._ref_path(name)
-        if expect is not _UNSET:
-            current = self.read_ref(name)
-            if current != expect:
-                raise ValueError(
-                    f"ref {name!r} is at {current!r}, expected {expect!r} (concurrent write?)"
-                )
+        # Read the old value whenever a logger needs it for the reflog, or
+        # when the caller asked for compare-and-swap — one read serves both.
+        old = self.read_ref(name) if (self._logger is not None or expect is not _UNSET) else None
+        if expect is not _UNSET and old != expect:
+            raise ValueError(
+                f"ref {name!r} is at {old!r}, expected {expect!r} (concurrent write?)"
+            )
 
         path.parent.mkdir(parents=True, exist_ok=True)
         lock = path.with_name(path.name + ".lock")
         lock.write_text(commit + "\n", encoding="utf-8")
         lock.replace(path)
 
-    def delete_ref(self, name: str) -> None:
+        if self._logger is not None:
+            self._logger.log(name, old, commit, op=op, message=reason)
+            # Double-entry rule: if HEAD symbolically points at the ref that
+            # just moved, HEAD moved too, and its own reflog must say so —
+            # otherwise HEAD@{n} silently skips every ordinary commit.
+            if self._head_ref_if_present() == name:
+                self._logger.log("HEAD", old, commit, op=op, message=reason)
+
+    def delete_ref(self, name: str, *, op: str = "delete", reason: str = "") -> None:
         """Remove ``name``. A no-op if it does not exist."""
         path = self._ref_path(name)
+        old = self.read_ref(name) if self._logger is not None else None
         path.unlink(missing_ok=True)
+
+        if self._logger is not None and old is not None:
+            self._logger.log(name, old, None, op=op, message=reason)
+            if self._head_ref_if_present() == name:
+                self._logger.log("HEAD", old, None, op=op, message=reason)
 
     def list_refs(self, prefix: str = "refs/") -> dict[str, str]:
         """Every ref under ``prefix``, mapped to its commit hash."""
@@ -239,15 +281,20 @@ class RefStore:
                 raise ValueError(f"ref {target!r} is malformed: {raw!r}")
             return Head(ref=target, commit=raw)
 
-    def set_head(self, ref: str) -> None:
+    def set_head(self, ref: str, *, op: str = "checkout", reason: str = "") -> None:
         """Point HEAD at branch ``ref`` symbolically."""
         _validate_ref_name(self.memgit_dir, ref)
+        old_commit = self._head_commit_if_present() if self._logger is not None else None
         head_path = self.memgit_dir / "HEAD"
         lock = head_path.with_name(head_path.name + ".lock")
         lock.write_text(f"{_SYMREF_PREFIX}{ref}\n", encoding="utf-8")
         lock.replace(head_path)
 
-    def detach_head(self, commit: str) -> None:
+        if self._logger is not None:
+            new_commit = self.read_ref(ref)
+            self._logger.log("HEAD", old_commit, new_commit, op=op, message=reason)
+
+    def detach_head(self, commit: str, *, op: str = "checkout", reason: str = "") -> None:
         """Point HEAD directly at ``commit``, leaving no branch current.
 
         Slice 4's rewind is built on this: checking out an arbitrary past
@@ -255,10 +302,30 @@ class RefStore:
         """
         if not is_object_hash(commit):
             raise ValueError(f"HEAD target must be a valid object hash, got {commit!r}")
+        old_commit = self._head_commit_if_present() if self._logger is not None else None
         head_path = self.memgit_dir / "HEAD"
         lock = head_path.with_name(head_path.name + ".lock")
         lock.write_text(commit + "\n", encoding="utf-8")
         lock.replace(head_path)
+
+        if self._logger is not None:
+            self._logger.log("HEAD", old_commit, commit, op=op, message=reason)
+
+    def _head_commit_if_present(self) -> str | None:
+        """``read_head().commit``, or ``None`` if HEAD does not exist yet.
+
+        Only ``init`` leaves HEAD briefly absent (before the first
+        ``set_head``); reading it early would otherwise raise.
+        """
+        if not (self.memgit_dir / "HEAD").is_file():
+            return None
+        return self.read_head().commit
+
+    def _head_ref_if_present(self) -> str | None:
+        """``read_head().ref``, or ``None`` if HEAD does not exist yet."""
+        if not (self.memgit_dir / "HEAD").is_file():
+            return None
+        return self.read_head().ref
 
     # -- resolution --------------------------------------------------------
 
