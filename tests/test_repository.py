@@ -212,6 +212,47 @@ class TestResolve:
         with pytest.raises(RevisionNotFoundError):
             repo.resolve("does-not-exist")
 
+    def test_resolves_head_tilde_n(self, repo):
+        first = repo.commit([make_fact()], "seed")
+        repo.commit([make_fact(object="Rust")], "update")
+        assert repo.resolve("HEAD~1") == first
+
+    def test_resolves_a_branch_name_with_ancestry_suffix(self, repo):
+        first = repo.commit([make_fact()], "seed")
+        repo.commit([make_fact(object="Rust")], "update")
+        assert repo.resolve("main~1") == first
+
+    def test_malformed_ancestry_suffix_raises_revision_not_found(self, repo):
+        repo.commit([make_fact()], "seed")
+        with pytest.raises(RevisionNotFoundError):
+            repo.resolve("HEAD~x")
+
+    def test_ancestry_suffix_past_a_root_raises_revision_not_found(self, repo):
+        repo.commit([make_fact()], "seed")
+        with pytest.raises(RevisionNotFoundError):
+            repo.resolve("HEAD~5")
+
+    def test_resolves_an_abbreviated_hash(self, repo):
+        commit_hash = repo.commit([make_fact()], "seed")
+        assert repo.resolve(commit_hash[:8]) == commit_hash
+
+    def test_a_branch_name_shadows_a_valid_hash_prefix(self, repo):
+        commit_hash = repo.commit([make_fact()], "seed")
+        # A branch literally named after a hash prefix must win over prefix
+        # resolution — bare-name resolution is tried first.
+        repo.create_branch(commit_hash[:8])
+        assert repo.resolve(commit_hash[:8]) == commit_hash
+
+    def test_resolves_head_at_reflog_index(self, repo):
+        first = repo.commit([make_fact()], "seed")
+        repo.commit([make_fact(object="Rust")], "update")
+        assert repo.resolve("HEAD@{1}") == first
+
+    def test_reflog_index_past_the_start_raises(self, repo):
+        repo.commit([make_fact()], "seed")
+        with pytest.raises(RevisionNotFoundError):
+            repo.resolve("HEAD@{99}")
+
 
 class TestBranches:
     def test_create_branch_at_head(self, repo):
@@ -298,3 +339,183 @@ class TestDiff:
         repo.commit([make_fact()], "seed")
         with pytest.raises(ValueError):
             repo.diff(use_merge_base=True)
+
+
+class TestCheckout:
+    def test_checkout_a_branch_attaches(self, repo):
+        repo.commit([make_fact()], "seed")
+        repo.create_branch("experiment")
+        result = repo.checkout("experiment")
+        assert not result.detached
+        assert repo.current_branch() == "experiment"
+
+    def test_checkout_a_commit_detaches(self, repo):
+        first = repo.commit([make_fact()], "seed")
+        repo.commit([make_fact(object="Rust")], "update")
+        result = repo.checkout(first)
+        assert result.detached
+        assert repo.head_commit() == first
+        assert repo.branches()["main"] != first  # the branch itself did not move
+
+    def test_checkout_an_ancestry_expression_detaches_even_though_the_base_is_a_branch(self, repo):
+        first = repo.commit([make_fact()], "seed")
+        repo.commit([make_fact(object="Rust")], "update")
+        result = repo.checkout("main~1")
+        assert result.detached
+        assert repo.head_commit() == first
+
+    def test_checkout_detach_flag_forces_detachment_of_a_branch(self, repo):
+        commit_hash = repo.commit([make_fact()], "seed")
+        result = repo.checkout("main", detach=True)
+        assert result.detached
+        assert repo.head_commit() == commit_hash
+
+    def test_checkout_unknown_revision_raises(self, repo):
+        repo.commit([make_fact()], "seed")
+        with pytest.raises(RevisionNotFoundError):
+            repo.checkout("does-not-exist")
+
+    def test_checkout_create_and_switch(self, repo):
+        repo.commit([make_fact()], "seed")
+        result = repo.checkout("HEAD", create="topic")
+        assert result.created_branch == "topic"
+        assert repo.current_branch() == "topic"
+        assert repo.branches()["topic"] == repo.head_commit()
+
+    def test_checkout_create_on_an_unborn_repository_leaves_it_unborn(self, repo):
+        result = repo.checkout("HEAD", create="topic")
+        assert repo.current_branch() == "topic"
+        assert repo.head_commit() is None
+        assert "topic" not in repo.branches()  # no ref file yet — still unborn
+
+    def test_checkout_result_previous_and_moved(self, repo):
+        first = repo.commit([make_fact()], "seed")
+        repo.commit([make_fact(object="Rust")], "update")
+        result = repo.checkout(first)
+        assert result.previous.commit != result.head.commit
+        assert result.moved
+
+    def test_checkout_the_current_branch_is_a_no_op(self, repo):
+        repo.commit([make_fact()], "seed")
+        result = repo.checkout("main")
+        assert not result.moved
+        assert repo.current_branch() == "main"
+
+
+class TestRewind:
+    def test_rewind_produces_a_commit_with_the_targets_tree(self, repo):
+        first = repo.commit([make_fact()], "seed")
+        repo.commit([make_fact(object="Rust")], "update")
+        rewound = repo.rewind(first)
+        assert repo.read_commit(rewound).tree == repo.read_commit(first).tree
+
+    def test_rewind_is_non_destructive_history_stays(self, repo):
+        first = repo.commit([make_fact()], "seed")
+        second = repo.commit([make_fact(object="Rust")], "update")
+        rewound = repo.rewind(first)
+        assert repo.read_commit(rewound).parents == (second,)
+        # Both prior commits remain reachable.
+        assert {c.hash for c in repo.log()} >= {first, second, rewound}
+
+    def test_rewind_of_the_current_state_raises_empty_commit(self, repo):
+        repo.commit([make_fact()], "seed")
+        with pytest.raises(EmptyCommitError):
+            repo.rewind("HEAD")
+
+    def test_rewind_records_provenance_metadata(self, repo):
+        first = repo.commit([make_fact()], "seed")
+        repo.commit([make_fact(object="Rust")], "update")
+        rewound = repo.rewind(first)
+        commit = repo.read_commit(rewound)
+        assert commit.metadata["rewind_of"] == first
+        assert commit.metadata["rewind_from"] == first
+
+    def test_rewind_default_message_names_the_target(self, repo):
+        first = repo.commit([make_fact()], "seed")
+        repo.commit([make_fact(object="Rust")], "update")
+        rewound = repo.rewind(first)
+        assert first[:8] in repo.read_commit(rewound).message
+
+    def test_partial_rewind_touches_only_the_given_keys(self, repo):
+        first = repo.commit(
+            [make_fact(predicate="prefers_language", object="Python"), make_fact(predicate="timezone", object="UTC")],
+            "seed",
+        )
+        repo.commit(
+            [make_fact(predicate="prefers_language", object="Rust"), make_fact(predicate="timezone", object="PST")],
+            "update",
+        )
+        current_tree_before_rewind = repo.read_tree(repo.resolve("HEAD"))
+
+        rewound = repo.rewind(first, keys=[("user", "prefers_language")])
+        by_key = repo.read_tree(rewound).by_key()
+
+        # The rewound key matches the old state...
+        old_tree = repo.read_tree(first)
+        assert by_key[("user", "prefers_language")] == old_tree.by_key()[("user", "prefers_language")]
+        # ...but the untouched key keeps HEAD's value from before the rewind.
+        assert by_key[("user", "timezone")] == current_tree_before_rewind.by_key()[("user", "timezone")]
+
+    def test_rewind_allow_empty(self, repo):
+        first = repo.commit([make_fact()], "seed")
+        rewound = repo.rewind(first, allow_empty=True)
+        assert repo.read_commit(rewound).tree == repo.read_commit(first).tree
+
+
+class TestReset:
+    def test_reset_moves_the_current_branch(self, repo):
+        first = repo.commit([make_fact()], "seed")
+        repo.commit([make_fact(object="Rust")], "update")
+        repo.reset(first)
+        assert repo.head_commit() == first
+        assert repo.branches()["main"] == first
+
+    def test_reset_on_detached_head_moves_head_not_a_branch(self, repo):
+        first = repo.commit([make_fact()], "seed")
+        second = repo.commit([make_fact(object="Rust")], "update")
+        repo.checkout(first)
+        repo.reset(second)
+        assert repo.head_commit() == second
+        assert repo.branches()["main"] == second  # main never moved from second in the first place
+        assert repo.head().is_detached
+
+    def test_reset_an_explicit_branch_not_the_current_one(self, repo):
+        first = repo.commit([make_fact()], "seed")
+        repo.create_branch("other", at=first)
+        repo.commit([make_fact(object="Rust")], "update")
+        repo.reset(first, branch="other")
+        assert repo.branches()["other"] == first
+        assert repo.current_branch() == "main"  # unaffected
+
+    def test_reset_on_unborn_head_without_a_branch_raises(self, repo):
+        commit_hash = repo.commit([make_fact()], "seed")
+        # "bogus" fails to resolve, so checkout(create=...) leaves "topic"
+        # genuinely unborn even though the repository itself has history.
+        repo.checkout("bogus", create="topic")
+        with pytest.raises(ValueError):
+            repo.reset(commit_hash)
+
+    def test_reset_unknown_revision_raises(self, repo):
+        repo.commit([make_fact()], "seed")
+        with pytest.raises(RevisionNotFoundError):
+            repo.reset("does-not-exist")
+
+
+class TestState:
+    def test_state_at_head(self, repo):
+        fact = make_fact()
+        commit_hash = repo.commit([fact], "seed")
+        state = repo.state()
+        assert state.commit == commit_hash
+        assert fact in state.facts
+
+    def test_state_at_an_ancestor(self, repo):
+        first = repo.commit([make_fact()], "seed")
+        repo.commit([make_fact(object="Rust")], "update")
+        state = repo.state("HEAD~1")
+        assert state.commit == first
+        assert state.one("user", "prefers_language").object == "Python"
+
+    def test_state_at_the_empty_tree(self, repo):
+        state = repo.state(EMPTY_TREE_HASH)
+        assert len(state) == 0
