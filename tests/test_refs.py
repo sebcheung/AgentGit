@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from memgit.core.reflog import RefLog, RefLogger
 from memgit.core.refs import Head, InvalidRefNameError, RefStore
 
 COMMIT_A = "a" * 64
@@ -22,6 +23,13 @@ def refs(tmp_path) -> RefStore:
     memgit_dir = tmp_path / ".memgit"
     (memgit_dir / "refs" / "heads").mkdir(parents=True)
     return RefStore(memgit_dir)
+
+
+@pytest.fixture
+def logged_refs(tmp_path) -> tuple[RefStore, object]:
+    memgit_dir = tmp_path / ".memgit"
+    (memgit_dir / "refs" / "heads").mkdir(parents=True)
+    return RefStore(memgit_dir, logger=RefLogger(memgit_dir, author="test")), memgit_dir
 
 
 class TestRoundTrip:
@@ -190,6 +198,75 @@ class TestListRefs:
     def test_excludes_lock_files(self, refs):
         (refs.memgit_dir / "refs" / "heads" / "main.lock").write_text(COMMIT_A, encoding="utf-8")
         assert refs.list_refs() == {}
+
+
+class TestReflogHook:
+    """RefStore's four writers, with a RefLogger attached."""
+
+    def test_no_logger_creates_no_logs_directory(self, refs):
+        refs.write_ref("refs/heads/main", COMMIT_A)
+        refs.set_head("refs/heads/main")
+        refs.detach_head(COMMIT_A)
+        refs.delete_ref("refs/heads/main")
+        assert not (refs.memgit_dir / "logs").exists()
+
+    def test_write_ref_logs_to_the_branch_reflog(self, logged_refs):
+        refs, memgit_dir = logged_refs
+        refs.write_ref("refs/heads/main", COMMIT_A, op="commit", reason="first")
+        entries = RefLog(memgit_dir, "refs/heads/main").entries()
+        assert len(entries) == 1
+        assert entries[0].old is None
+        assert entries[0].new == COMMIT_A
+        assert entries[0].op == "commit"
+        assert entries[0].message == "first"
+
+    def test_write_ref_also_logs_head_when_head_points_at_it(self, logged_refs):
+        refs, memgit_dir = logged_refs
+        refs.set_head("refs/heads/main")
+        before = len(RefLog(memgit_dir, "HEAD").entries())
+        refs.write_ref("refs/heads/main", COMMIT_A)
+        head_entries = RefLog(memgit_dir, "HEAD").entries()
+        assert len(head_entries) == before + 1
+        assert head_entries[-1].new == COMMIT_A
+
+    def test_write_ref_does_not_log_head_when_head_points_elsewhere(self, logged_refs):
+        refs, memgit_dir = logged_refs
+        refs.set_head("refs/heads/other")
+        before = len(RefLog(memgit_dir, "HEAD").entries())
+        refs.write_ref("refs/heads/main", COMMIT_A)
+        assert len(RefLog(memgit_dir, "HEAD").entries()) == before
+
+    def test_set_head_logs_head_moving_between_branches(self, logged_refs):
+        refs, memgit_dir = logged_refs
+        refs.write_ref("refs/heads/main", COMMIT_A)
+        refs.write_ref("refs/heads/other", COMMIT_B)
+        refs.set_head("refs/heads/main")
+        refs.set_head("refs/heads/other", op="checkout", reason="switch")
+        entries = RefLog(memgit_dir, "HEAD").entries()
+        assert [e.new for e in entries] == [COMMIT_A, COMMIT_B]
+        assert entries[-1].op == "checkout"
+
+    def test_detach_head_logs_a_head_movement(self, logged_refs):
+        refs, memgit_dir = logged_refs
+        refs.write_ref("refs/heads/main", COMMIT_A)
+        refs.set_head("refs/heads/main")
+        refs.detach_head(COMMIT_A)
+        entries = RefLog(memgit_dir, "HEAD").entries()
+        assert entries[-1].old == COMMIT_A
+        assert entries[-1].new == COMMIT_A
+
+    def test_delete_ref_logs_the_deletion(self, logged_refs):
+        refs, memgit_dir = logged_refs
+        refs.write_ref("refs/heads/main", COMMIT_A)
+        refs.delete_ref("refs/heads/main")
+        entries = RefLog(memgit_dir, "refs/heads/main").entries()
+        assert entries[-1].old == COMMIT_A
+        assert entries[-1].new is None
+
+    def test_delete_ref_of_a_never_existed_ref_logs_nothing(self, logged_refs):
+        refs, memgit_dir = logged_refs
+        refs.delete_ref("refs/heads/nope")
+        assert RefLog(memgit_dir, "refs/heads/nope").entries() == ()
 
 
 class TestResolve:
