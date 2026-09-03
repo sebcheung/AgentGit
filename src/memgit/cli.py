@@ -12,7 +12,8 @@ from memgit import __version__
 from memgit.core.commit import Commit
 from memgit.core.diff import ChangeKind, Diff
 from memgit.core.fact import Fact
-from memgit.core.graph import is_ancestor
+from memgit.core.graph import ancestors, is_ancestor
+from memgit.core.refs import InvalidRefNameError
 from memgit.core.repository import (
     EmptyCommitError,
     NotARepositoryError,
@@ -406,6 +407,190 @@ def rev_parse_cmd(rev: str = typer.Argument(..., help="Revision to resolve.")) -
         _fail(f"unknown revision: {exc}")
 
 
+@app.command("checkout")
+def checkout_cmd(
+    rev: str = typer.Argument("HEAD", help="Revision, branch, or ancestry expression to check out."),
+    create: str = typer.Option(None, "-b", "--branch", help="Create and switch to a new branch at REV."),
+    detach: bool = typer.Option(False, "--detach", help="Detach HEAD even if REV names a branch."),
+    stat: bool = typer.Option(False, "--stat", help="Show the full diff summary of what changed."),
+) -> None:
+    """Move HEAD. Mirrors ``git checkout``, minus everything about a working tree.
+
+    MemGit has no working tree and no index, so this never needs --force:
+    nothing is ever at risk of being overwritten.
+    """
+    repo = _repo()
+    try:
+        result = repo.checkout(rev, create=create, detach=detach)
+    except RevisionNotFoundError as exc:
+        _fail(f"unknown revision: {exc}")
+        return
+    except (ValueError, InvalidRefNameError) as exc:
+        _fail(str(exc))
+        return
+
+    if result.created_branch is not None:
+        typer.echo(f"Switched to a new branch '{result.created_branch}'")
+    elif result.detached:
+        commit_display = result.head.commit[:8] if result.head.commit else "(unborn)"
+        typer.echo(f"HEAD is now detached at {commit_display}")
+    else:
+        typer.echo(f"Switched to branch '{result.head.branch}'")
+
+    if result.moved and result.previous.commit is not None and result.head.commit is not None:
+        diff_result = repo.diff(result.previous.commit, result.head.commit)
+        if stat:
+            _print_diff_stat(diff_result)
+        else:
+            typer.echo(f"Memory: {diff_result.stat().keys_changed} key(s) changed")
+
+
+@app.command("rewind")
+def rewind_cmd(
+    rev: str = typer.Argument(..., help="Past revision to bring forward onto HEAD."),
+    message: str = typer.Option(None, "-m", "--message", help="Commit message."),
+    author: str = typer.Option("unknown", "--author", help="Who or what performed the rewind."),
+    key: list[str] = typer.Option(
+        None,
+        "--key",
+        help="Rewind only this SUBJECT:PREDICATE key (repeatable); split on the last ':'.",
+    ),
+    allow_empty: bool = typer.Option(False, "--allow-empty", help="Permit a rewind that changes nothing."),
+) -> None:
+    """Re-commit a past memory state forward onto HEAD. Non-destructive.
+
+    Unlike ``memgit reset``, nothing becomes unreachable: the rewind is
+    itself a new commit, visible in ``memgit log`` like any other change.
+    """
+    repo = _repo()
+
+    keys = None
+    if key:
+        keys = []
+        for raw in key:
+            if ":" not in raw:
+                _fail(f"--key must be SUBJECT:PREDICATE, got {raw!r}")
+                return
+            subject, _, predicate = raw.rpartition(":")
+            keys.append((subject, predicate))
+
+    try:
+        commit_hash = repo.rewind(rev, message, author=author, keys=keys, allow_empty=allow_empty)
+    except RevisionNotFoundError as exc:
+        _fail(f"unknown revision: {exc}")
+        return
+    except EmptyCommitError as exc:
+        _fail(str(exc))
+        return
+
+    typer.echo(commit_hash)
+
+
+@app.command("reset")
+def reset_cmd(
+    rev: str = typer.Argument(..., help="Revision to reset to."),
+    branch: str = typer.Option(
+        None, "--branch", help="Branch to move. Defaults to HEAD's own branch, or HEAD itself if detached."
+    ),
+) -> None:
+    """Move a branch pointer to REV — destructive. Prefer ``memgit rewind``.
+
+    With no working tree and no index, git's --soft/--mixed/--hard split
+    collapses into this one operation. Commits solely reachable from the old
+    position become unreachable, but not deleted — recoverable via
+    ``memgit reflog`` while it still holds the old value.
+    """
+    repo = _repo()
+
+    if branch is not None:
+        label = branch
+        previous_hash = repo.branches().get(branch)
+    elif repo.head().is_detached:
+        label = "HEAD"
+        previous_hash = repo.head_commit()
+    else:
+        label = repo.current_branch()
+        previous_hash = repo.head_commit()
+
+    try:
+        new_hash = repo.reset(rev, branch=branch)
+    except RevisionNotFoundError as exc:
+        _fail(f"unknown revision: {exc}")
+        return
+    except ValueError as exc:
+        _fail(str(exc))
+        return
+
+    typer.echo(f"{label} is now at {new_hash[:8]}")
+
+    if previous_hash is not None and previous_hash != new_hash:
+        orphaned = ancestors(previous_hash, repo.read_commit) - ancestors(new_hash, repo.read_commit)
+        if orphaned:
+            typer.secho(
+                f"warning: {len(orphaned)} commit(s) are no longer reachable from {label}; "
+                f"recover with 'memgit reflog'",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+
+
+@app.command("reflog")
+def reflog_cmd(
+    ref: str = typer.Argument("HEAD", help="Ref whose reflog to show."),
+    limit: int = typer.Option(None, "-n", "--limit", help="Show at most this many entries."),
+) -> None:
+    """Show every place REF has pointed. Mirrors ``git reflog``."""
+    repo = _repo()
+    entries = repo.reflog(ref)
+    if limit is not None:
+        entries = entries[-limit:]
+    for offset, entry in enumerate(reversed(entries)):
+        short = (entry.new or "0" * 64)[:8]
+        typer.echo(f"{short} {ref}@{{{offset}}}: {entry.op}: {entry.message}")
+
+
+@app.command("state")
+def state_cmd(
+    rev: str = typer.Argument("HEAD", help="Revision whose memory state to show."),
+    subject: str = typer.Option(None, "--subject", help="Only facts about this subject."),
+    predicate: str = typer.Option(None, "--predicate", help="Only facts at this predicate."),
+    min_confidence: float = typer.Option(0.0, "--min-confidence", help="Drop facts below this confidence."),
+    render: bool = typer.Option(
+        False, "--render", help="Print the context-block rendering instead of a listing."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output."),
+) -> None:
+    """Show what the agent believed at REV — the time-travel command.
+
+    Distinct from ``memgit show --facts``: that is commit-centric and
+    unfiltered, this is state-centric and filterable.
+    """
+    repo = _repo()
+    try:
+        memory = repo.state(rev)
+    except RevisionNotFoundError as exc:
+        _fail(f"unknown revision: {exc}")
+        return
+    except (ObjectNotFoundError, CorruptObjectError) as exc:
+        _fail(str(exc))
+        return
+
+    if subject is not None or predicate is not None or min_confidence > 0.0:
+        memory = memory.filter(
+            min_confidence=min_confidence,
+            subjects={subject} if subject is not None else None,
+            predicates={predicate} if predicate is not None else None,
+        )
+
+    if as_json:
+        typer.echo(json.dumps(memory.to_dict(), indent=2, ensure_ascii=False))
+    elif render:
+        typer.echo(memory.render())
+    else:
+        for fact in sorted(memory.facts, key=lambda f: (f.subject, f.predicate, f.object)):
+            typer.echo(f"  {fact}")
+
+
 @app.command("status")
 def status_cmd() -> None:
     """Show the current branch, HEAD, and fact count."""
@@ -413,6 +598,7 @@ def status_cmd() -> None:
     head = repo.head()
     if head.is_detached:
         typer.echo(f"HEAD detached at {head.commit}")
+        typer.echo("  (use 'memgit checkout <branch>' to reattach)")
     else:
         typer.echo(f"On branch {head.branch}")
         if head.commit is None:
