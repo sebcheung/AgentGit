@@ -33,4 +33,7 @@ module-root = "src"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q -m \"not live\""
+markers = [
+    "live: hits the real Anthropic API; needs ANTHROPIC_API_KEY and `--all-extras`",
+]
