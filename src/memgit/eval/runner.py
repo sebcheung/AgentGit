@@ -2,9 +2,10 @@
 
 Every check reads exactly the surface :meth:`~memgit.core.repository.
 Repository.diff` and ``memgit diff``/``memgit show`` already read: a
-materialized :class:`~memgit.core.state.MemoryState` and a
+materialized :class:`~memgit.core.state.MemoryState`, a
 :class:`~memgit.core.diff.Diff` against the revision's first parent (the
-same bare-diff default ``memgit diff`` uses). Nothing here calls the agent
+same bare-diff default ``memgit diff`` uses), and a deterministic
+:class:`~memgit.retrieval.rank.Retriever`. Nothing here calls the agent
 runtime or the replay engine, and nothing writes an object, a ref, or a
 commit — a regression check that mutated the thing it measures would be a
 defect, not a feature.
@@ -36,6 +37,7 @@ from memgit.eval.case import (
     KeyAbsent,
     KeyExists,
     NoViolations,
+    Recalls,
     ValueIs,
 )
 
@@ -165,6 +167,18 @@ def _run_no_violations(diff: Diff | None, check: NoViolations) -> CheckResult:
     return CheckResult(ok=ok, kind="no_violations", detail=detail)
 
 
+def _run_recalls(repo: Repository, state: MemoryState, check: Recalls) -> CheckResult:
+    result = repo.retriever().retrieve(state, check.query, k=check.k, as_of=check.as_of)
+    keys = [retrieved.fact.key for retrieved in result.facts]
+    ok = (check.subject, check.predicate) in keys
+    detail = (
+        f"{check.subject} {check.predicate} retrieved for {check.query!r}"
+        if ok
+        else f"{check.subject} {check.predicate} not in top-{check.k} for {check.query!r} (got {keys!r})"
+    )
+    return CheckResult(ok=ok, kind="recalls", detail=detail)
+
+
 def _run_check(repo: Repository, state: MemoryState, diff: Diff | None, check: Check) -> CheckResult:
     if isinstance(check, KeyExists):
         return _run_key_exists(state, check)
@@ -178,6 +192,8 @@ def _run_check(repo: Repository, state: MemoryState, diff: Diff | None, check: C
         return _run_diff_kind(diff, check)
     if isinstance(check, NoViolations):
         return _run_no_violations(diff, check)
+    if isinstance(check, Recalls):
+        return _run_recalls(repo, state, check)
     raise TypeError(f"unhandled check type: {type(check).__name__}")  # pragma: no cover
 
 
