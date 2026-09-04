@@ -26,13 +26,13 @@ A git-inspired version control and time-travel debugging system for AI agent mem
 | Storage backend | Postgres for the commit graph / fact metadata (relational, real foreign keys); object store blobs can stay as flat hashed files or a blob column | Gives you genuine relational data modeling instead of just a key-value blob store — a real gap-filler for backend depth |
 | Migrations | Alembic | Shows you understand schema evolution isn't a one-time thing |
 | API validation | Pydantic models for all request/response schemas (comes with FastAPI) | Explicit, typed contracts instead of raw dicts — a deliberate design choice worth naming in interviews |
-| Auth | Simple API-key or token-based auth on the deployed API | Real answer to "how would you secure this," without building a full identity system |
+| Auth | Simple API-key or token-based auth on the API | Real answer to "how would you secure this," without building a full identity system |
 | Retrieval / RAG | `sentence-transformers` or an embedding API + plain `numpy` cosine similarity or Chroma for the vector index | Needed once memory grows past what fits in context; scoped to correct commit/branch (see below) |
-| Tool exposure | MCP server wrapping MemGit's read/write/diff/branch operations, served remotely over HTTP/SSE (not just local stdio) | Lets any MCP-compatible agent — including a live Claude conversation — use MemGit as a real, reachable memory backend |
-| Deployment | Render's free web-service tier | Proves you can ship something reachable, not just run it on localhost, at zero cost — no usage-based billing risk the way Fly.io's free allowance has; the tradeoff is the service sleeping after inactivity, which is fine for a demo/portfolio project |
-| CI/CD | GitHub Actions — run tests + deploy on push to `main` | Small setup, real "I do CI/CD" claim |
+| Tool exposure | MCP server wrapping MemGit's read/write/diff/branch operations, served over HTTP/SSE (not just local stdio) | Lets any MCP-compatible agent — including a live Claude conversation — use MemGit as a real memory backend; run locally, or tunneled temporarily (e.g. `ngrok`/`cloudflared`, both free) for a live demo, rather than permanently hosted |
+| Packaging | Docker + `docker compose up` — no hosted deployment | Zero cost, zero ongoing maintenance surface; "clone it, run one command" is a complete, honest answer to "how would someone run this" for a project that isn't serving real traffic. See "Scope discipline" for why a paid or usage-billed host isn't worth the risk here |
+| CI | GitHub Actions — run tests and build the Docker image on every push to `main` | Real "I do CI" claim without needing anywhere to deploy to |
 | Logging / error handling | Python `logging` with levels, retries on LLM calls, explicit error responses from the API | Production code is mostly about the failure paths, not the happy path |
-| Monitoring | A `/health` endpoint + free-tier uptime monitor (e.g. UptimeRobot) | Small addition, genuinely senior-sounding sentence in an interview |
+| Health check | A `/health` endpoint, exercised by Docker's own `HEALTHCHECK` and by CI, not by an external uptime monitor | Same signal ("this thing knows how to report its own health") without needing a live host for an uptime service to poll |
 
 ---
 
@@ -77,18 +77,19 @@ A git-inspired version control and time-travel debugging system for AI agent mem
                     └───────────────────┘
 
 ┌─────────────────────────┐      ┌──────────────────────────┐
-│   Retrieval Layer (RAG)  │      │   MCP Server (deployed,   │
-│  embed facts at write    │      │   HTTP/SSE, not just      │
-│  time, retrieve top-k    │◄────►│   local stdio)             │
-│  scoped to commit/branch,│      │  exposes commit/branch/   │
-│  weighted by confidence  │      │  diff/read/write as MCP   │
-│  decay                   │      │  tools — any MCP-compatible│
-└─────────────────────────┘      │  agent (incl. live Claude) │
+│   Retrieval Layer (RAG)  │      │   MCP Server (HTTP/SSE,   │
+│  embed facts at write    │      │   not just local stdio;   │
+│  time, retrieve top-k    │◄────►│   local, or tunneled for  │
+│  scoped to commit/branch,│      │   a live demo)             │
+│  weighted by confidence  │      │  exposes commit/branch/   │
+│  decay                   │      │  diff/read/write as MCP   │
+└─────────────────────────┘      │  tools — any MCP-compatible│
+                                  │  agent (incl. live Claude) │
                                   │  can use MemGit as memory  │
                                   └──────────────────────────┘
 
-        Deployment: Render (free tier) · GitHub Actions CI/CD ·
-        Postgres · /health endpoint + uptime monitoring
+        Packaging: Docker Compose (local, one command) ·
+        GitHub Actions CI · Postgres · /health endpoint
 ```
 
 ### Core components, in build order
@@ -106,7 +107,7 @@ A git-inspired version control and time-travel debugging system for AI agent mem
 11. **Eval suite ("CI for agent memory")** — reuse the replay engine as a regression check: define a small set of test queries with expected behaviors, run them automatically against every new commit, and flag if a memory change broke something.
 12. **Dashboard** — commit graph visualization, a diff viewer, and a "run replay comparison" button. This is what makes the live demo land.
 13. **Production hardening** — migrate metadata storage to Postgres with Alembic migrations, add Pydantic request/response validation, add API-key auth, add structured logging + retry logic on LLM calls, add a `/health` endpoint.
-14. **Deploy** — ship the API and MCP server to Render's free tier, wire up GitHub Actions for test-and-deploy, and hook up basic uptime monitoring.
+14. **Package, don't deploy** — containerize the API and MCP server with Docker Compose so the whole stack runs with one command, and wire up GitHub Actions to run tests (and build the image) on every push. No hosted deployment — see "Scope discipline" for why.
 
 ### Build order, as vertical slices
 
@@ -126,7 +127,7 @@ increment, tested before moving on:
 | 8. MCP server | 10 (moved up — the tool-call fact-write decision makes this nearly the same code as slice 4) | |
 | 9. Eval suite | 11 | |
 | 10. FastAPI + dashboard | 12 | |
-| 11. Production hardening + deploy | 13 + 14 (merged) | |
+| 11. Production hardening + packaging | 13 + 14 (merged) | |
 
 Checkout/rewind is deliberately its own slice (4), after the diff engine (3) rather
 than bundled into the commit graph (2): materializing a past state is easiest to get
@@ -180,11 +181,11 @@ Design choices already made and built on, not up for re-litigation without a rea
 - **Weeks 3-4:** Diff engine + checkout/rewind, with a thorough test suite; API layer with Pydantic-validated schemas
 - **Weeks 5-6:** Hook up a real agent via the Anthropic API; get memory reads/writes flowing into commits; add the retrieval/RAG layer once memory volume makes full-context injection impractical
 - **Weeks 7-8:** Replay/ablation engine + temporal confidence decay + eval suite ("CI for agent memory")
-- **Weeks 9-10:** MCP server wrapper (served remotely over HTTP/SSE) + dashboard
-- **Weeks 11-12:** Production hardening (auth, logging/retries, health endpoint) + deploy to Render's free tier + GitHub Actions CI/CD + uptime monitoring
+- **Weeks 9-10:** MCP server wrapper (HTTP/SSE, run locally or tunneled for a demo) + dashboard
+- **Weeks 11-12:** Production hardening (auth, logging/retries, health endpoint) + Docker Compose packaging + GitHub Actions CI + a local load-test script and write-up
 - **Buffer:** polish the demo case study, write the README with real numbers, publish to GitHub
 
-Note: weeks 11-12 push this past the original 8-10 week estimate — if time is tight, the production-hardening pass is the right place to compress (e.g., skip Alembic and hand-write one clean schema, or skip uptime monitoring) rather than cutting the core versioning/diff/replay engine, which is the actual point of the project.
+Note: weeks 11-12 push this past the original 8-10 week estimate — if time is tight, the production-hardening pass is the right place to compress (e.g., skip Alembic and hand-write one clean schema, or trim the load-test write-up to one paragraph) rather than cutting the core versioning/diff/replay engine, which is the actual point of the project.
 
 ## Scope discipline — deliberately excluded
 
@@ -193,6 +194,7 @@ To keep this a focused, finishable summer project rather than an open-ended syst
 - **Multi-agent shared memory** (conflict resolution and access control across multiple agents sharing a memory space) — real complexity, marginal added resume value over what's already here
 - **Full distributed tracing / observability stack** (OpenTelemetry-style) — the dashboard and commit graph already provide equivalent debugging value at a fraction of the complexity
 - **Training or fine-tuning a custom embedding model** — an off-the-shelf embedding model is the correct, unremarkable choice here; the project's value is the versioning/attribution system, not the embeddings themselves
+- **A permanently hosted deployment** (Fly.io, Render, a VPS, or anything else with a bill attached) — the engineering interviewers actually probe here is the CAS/diff/replay engine, not infra uptime, and a hobby project has no real traffic to justify the ongoing cost or maintenance. Docker Compose (one command, fully local) plus a local load-test run tells the same "this is production-shaped" story for $0
 
 ---
 
