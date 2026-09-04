@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from memgit.eval.case import EvalCase, EvalFormatError, EvalSuite, load_suites
 from memgit.eval.runner import CaseResult, CheckResult, SuiteResult, run_case, run_suite
+from memgit.eval.sweep import FirstFailure, sweep
 
 __all__ = [
     "EvalCase",
@@ -27,4 +28,6 @@ __all__ = [
     "SuiteResult",
     "run_case",
     "run_suite",
+    "FirstFailure",
+    "sweep",
 ]
