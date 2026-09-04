@@ -29,7 +29,7 @@ A git-inspired version control and time-travel debugging system for AI agent mem
 | Auth | Simple API-key or token-based auth on the deployed API | Real answer to "how would you secure this," without building a full identity system |
 | Retrieval / RAG | `sentence-transformers` or an embedding API + plain `numpy` cosine similarity or Chroma for the vector index | Needed once memory grows past what fits in context; scoped to correct commit/branch (see below) |
 | Tool exposure | MCP server wrapping MemGit's read/write/diff/branch operations, served remotely over HTTP/SSE (not just local stdio) | Lets any MCP-compatible agent — including a live Claude conversation — use MemGit as a real, reachable memory backend |
-| Deployment | Fly.io, Render, or a VPS (DigitalOcean droplet) | Proves you can ship something reachable, not just run it on localhost |
+| Deployment | Render's free web-service tier | Proves you can ship something reachable, not just run it on localhost, at zero cost — no usage-based billing risk the way Fly.io's free allowance has; the tradeoff is the service sleeping after inactivity, which is fine for a demo/portfolio project |
 | CI/CD | GitHub Actions — run tests + deploy on push to `main` | Small setup, real "I do CI/CD" claim |
 | Logging / error handling | Python `logging` with levels, retries on LLM calls, explicit error responses from the API | Production code is mostly about the failure paths, not the happy path |
 | Monitoring | A `/health` endpoint + free-tier uptime monitor (e.g. UptimeRobot) | Small addition, genuinely senior-sounding sentence in an interview |
@@ -87,7 +87,7 @@ A git-inspired version control and time-travel debugging system for AI agent mem
                                   │  can use MemGit as memory  │
                                   └──────────────────────────┘
 
-        Deployment: Fly.io/Render/VPS · GitHub Actions CI/CD ·
+        Deployment: Render (free tier) · GitHub Actions CI/CD ·
         Postgres · /health endpoint + uptime monitoring
 ```
 
@@ -106,7 +106,7 @@ A git-inspired version control and time-travel debugging system for AI agent mem
 11. **Eval suite ("CI for agent memory")** — reuse the replay engine as a regression check: define a small set of test queries with expected behaviors, run them automatically against every new commit, and flag if a memory change broke something.
 12. **Dashboard** — commit graph visualization, a diff viewer, and a "run replay comparison" button. This is what makes the live demo land.
 13. **Production hardening** — migrate metadata storage to Postgres with Alembic migrations, add Pydantic request/response validation, add API-key auth, add structured logging + retry logic on LLM calls, add a `/health` endpoint.
-14. **Deploy** — ship the API and MCP server to Fly.io/Render/a VPS, wire up GitHub Actions for test-and-deploy, and hook up basic uptime monitoring.
+14. **Deploy** — ship the API and MCP server to Render's free tier, wire up GitHub Actions for test-and-deploy, and hook up basic uptime monitoring.
 
 ### Build order, as vertical slices
 
@@ -181,7 +181,7 @@ Design choices already made and built on, not up for re-litigation without a rea
 - **Weeks 5-6:** Hook up a real agent via the Anthropic API; get memory reads/writes flowing into commits; add the retrieval/RAG layer once memory volume makes full-context injection impractical
 - **Weeks 7-8:** Replay/ablation engine + temporal confidence decay + eval suite ("CI for agent memory")
 - **Weeks 9-10:** MCP server wrapper (served remotely over HTTP/SSE) + dashboard
-- **Weeks 11-12:** Production hardening (auth, logging/retries, health endpoint) + deploy to Fly.io/Render/VPS + GitHub Actions CI/CD + uptime monitoring
+- **Weeks 11-12:** Production hardening (auth, logging/retries, health endpoint) + deploy to Render's free tier + GitHub Actions CI/CD + uptime monitoring
 - **Buffer:** polish the demo case study, write the README with real numbers, publish to GitHub
 
 Note: weeks 11-12 push this past the original 8-10 week estimate — if time is tight, the production-hardening pass is the right place to compress (e.g., skip Alembic and hand-write one clean schema, or skip uptime monitoring) rather than cutting the core versioning/diff/replay engine, which is the actual point of the project.
