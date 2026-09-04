@@ -1,7 +1,7 @@
 """``MemoryAgent`` — the tool-calling loop, and the turn-to-commit contract.
 
 This is the one module in ``memgit.agent`` that touches ``Repository``. It
-owns three things:
+owns four things:
 
 1. **The loop.** A hand-written ``while stop_reason == "tool_use"`` over
    :class:`~memgit.agent.client.LLMClient`, not the SDK's beta
@@ -15,37 +15,57 @@ owns three things:
    mutates a working copy of the state the model was shown and hands the
    complete result to ``commit`` once the loop ends — never per tool call,
    so an API failure mid-turn leaves memory untouched rather than
-   half-written.
+   half-written. **This working copy always starts as the full ``before``
+   state, in retrieval mode or not** — retrieval only narrows what gets
+   *rendered* into the prompt, never what a turn commits. Seeding ``working``
+   from a retrieved subset instead would mean a turn that only saw 8 of 200
+   facts silently commits a memory with 192 of them deleted.
 3. **What "memory" means across turns.** The chat transcript
    (``messages``) lives only for the lifetime of one :class:`MemoryAgent`
    and is never committed — it is scratch, not memory. What a turn commits
    is read back from ``HEAD`` at the start of the *next* turn, which is what
    lets a fact remembered in one process reach a fact recalled in the next.
+4. **Retrieval mode selection.** Below ``config["retrieval"]["full_below"]``
+   facts (default 64), a turn injects the full state, exactly as slice 5
+   did. At or above it, a turn retrieves the top-k facts most relevant to
+   the query and offers the ``recall`` tool for the rest — the two are the
+   same flag (:func:`~memgit.agent.tools.tool_schemas`'s ``recall``
+   parameter), since under full injection there is nothing left to recall.
+   ``recall`` searches the turn's committed ``before`` state, not the
+   mutating ``working`` copy — searching ``working`` would let the model
+   "recall" a belief it invented earlier in the same turn, which was never
+   part of any real commit.
 """
 
 from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from memgit.agent.client import AgentError, LLMClient, default_client
 from memgit.agent.prompt import build_system_prompt
 from memgit.agent.tools import (
     ForgetCall,
+    RecallCall,
     RememberCall,
     ToolCallError,
     TOOL_SCHEMAS,
     decode_forget,
+    decode_recall,
     decode_remember,
+    tool_schemas,
 )
 from memgit.core.cardinality import CardinalityMap
 from memgit.core.repository import Repository
 from memgit.core.state import MemoryState
+from memgit.retrieval.rank import Retriever
 
 __all__ = ["MemoryAgent", "TurnResult", "ToolCallRecord", "AgentError", "run_tool_loop"]
 
 _MESSAGE_LIMIT = 72
+_DEFAULT_FULL_BELOW = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +141,9 @@ def run_tool_loop(
     *,
     source: str,
     max_tool_rounds: int,
+    retriever: Retriever | None = None,
+    recall_state: MemoryState | None = None,
+    as_of: datetime | None = None,
 ) -> tuple[Any, MemoryState, list[ToolCallRecord]]:
     """Run one turn's tool-calling loop to completion.
 
@@ -131,15 +154,30 @@ def run_tool_loop(
     exactly what lets slice 6's replay engine reuse it against a state it
     only intends to explore.
 
+    Args:
+        retriever: If given, offers the ``recall`` tool this turn
+            (:func:`~memgit.agent.tools.tool_schemas`'s ``recall`` flag
+            tracks ``retriever is not None``). ``None`` reproduces slice
+            5/6's exact write-only tool surface.
+        recall_state: The state ``recall`` searches — the turn's committed
+            ``before``, never ``working``, so a call within a turn can never
+            "recall" a belief the model only just invented. Required when
+            ``retriever`` is given.
+        as_of: The moment retrieval ranks against. Required when
+            ``retriever`` is given; deliberately never defaulted to
+            ``datetime.now()`` here, so every call into this loop stays
+            reproducible.
+
     Raises:
         AgentError: the model refused, or the loop exceeded
             ``max_tool_rounds``.
     """
     tool_calls: list[ToolCallRecord] = []
     rounds = 0
+    schemas = list(tool_schemas(recall=retriever is not None))
 
     while True:
-        response = client.create_message(system=system, messages=messages, tools=list(TOOL_SCHEMAS))
+        response = client.create_message(system=system, messages=messages, tools=schemas)
 
         if response.stop_reason == "refusal":
             details = response.stop_details
@@ -159,7 +197,15 @@ def run_tool_loop(
         for block in response.content:
             if block.type != "tool_use":
                 continue
-            record, result_block, working = _apply_tool_call(block, working, cardinality, source=source)
+            record, result_block, working = _apply_tool_call(
+                block,
+                working,
+                cardinality,
+                source=source,
+                retriever=retriever,
+                recall_state=recall_state,
+                as_of=as_of,
+            )
             tool_calls.append(record)
             results.append(result_block)
         messages.append({"role": "user", "content": results})
@@ -169,7 +215,14 @@ def run_tool_loop(
 
 
 def _apply_tool_call(
-    block: Any, working: MemoryState, cardinality: CardinalityMap, *, source: str
+    block: Any,
+    working: MemoryState,
+    cardinality: CardinalityMap,
+    *,
+    source: str,
+    retriever: Retriever | None = None,
+    recall_state: MemoryState | None = None,
+    as_of: datetime | None = None,
 ) -> tuple[ToolCallRecord, dict[str, Any], MemoryState]:
     """Decode and apply one ``tool_use`` block; never raises.
 
@@ -187,14 +240,25 @@ def _apply_tool_call(
             working = _merge_forget(working, call)
             target = call.key[0] + " " + call.key[1]
             content = f"forgot {target}" + (f"={call.object}" if call.object else " (all values)")
+        elif block.name == "recall" and retriever is not None:
+            assert recall_state is not None and as_of is not None
+            call = decode_recall(block.input)
+            result = retriever.retrieve(
+                recall_state,
+                call.query,
+                k=call.limit,
+                as_of=as_of,
+                subjects={call.subject} if call.subject is not None else None,
+            )
+            content = result.render()
         else:
             raise ToolCallError(f"unknown tool {block.name!r}")
     except ToolCallError as exc:
-        result = {"type": "tool_result", "tool_use_id": block.id, "content": str(exc), "is_error": True}
-        return ToolCallRecord(name=block.name, input=block.input, ok=False), result, working
+        result_block = {"type": "tool_result", "tool_use_id": block.id, "content": str(exc), "is_error": True}
+        return ToolCallRecord(name=block.name, input=block.input, ok=False), result_block, working
 
-    result = {"type": "tool_result", "tool_use_id": block.id, "content": content}
-    return ToolCallRecord(name=block.name, input=block.input, ok=True), result, working
+    result_block = {"type": "tool_result", "tool_use_id": block.id, "content": content}
+    return ToolCallRecord(name=block.name, input=block.input, ok=True), result_block, working
 
 
 def _summarize(user_message: str, *, limit: int = _MESSAGE_LIMIT) -> str:
@@ -269,7 +333,14 @@ class MemoryAgent:
         head = self.repo.head_commit()
         before = self.repo.state("HEAD") if head is not None else MemoryState.empty()
         cardinality = self.repo.cardinality()
-        system = build_system_prompt(before, cardinality, head=head)
+
+        full_below = self.repo.config().get("retrieval", {}).get("full_below", _DEFAULT_FULL_BELOW)
+        retrieval_mode = len(before) >= full_below
+        retriever = self.repo.retriever() if retrieval_mode else None
+        as_of = datetime.now(timezone.utc)
+        retrieved = retriever.retrieve(before, user_message, as_of=as_of) if retriever is not None else None
+
+        system = build_system_prompt(before, cardinality, head=head, retrieved=retrieved)
 
         self._messages.append({"role": "user", "content": user_message})
         source = f"session:{self._session_id}/turn:{self._turn}"
@@ -281,6 +352,9 @@ class MemoryAgent:
             cardinality,
             source=source,
             max_tool_rounds=self.max_tool_rounds,
+            retriever=retriever,
+            recall_state=before,
+            as_of=as_of,
         )
         reply = "".join(block.text for block in response.content if block.type == "text")
 
@@ -288,6 +362,16 @@ class MemoryAgent:
         commit_hash: str | None = None
         after = before
         if changed or self.record_empty:
+            if retrieved is not None:
+                retrieval_metadata: dict[str, Any] = {
+                    "mode": "top_k",
+                    "k": len(retrieved.facts),
+                    "embedder": retrieved.embedder,
+                    "injected": [r.fact.hash for r in retrieved.facts],
+                    "as_of": retrieved.as_of,
+                }
+            else:
+                retrieval_metadata = {"mode": "full"}
             metadata = {
                 "query": user_message,
                 "model": self.model,
@@ -295,6 +379,7 @@ class MemoryAgent:
                 "turn": self._turn,
                 "stop_reason": response.stop_reason,
                 "tool_calls": [{"name": tc.name, "ok": tc.ok} for tc in tool_calls],
+                "retrieval": retrieval_metadata,
             }
             commit_hash = self.repo.commit(
                 working.facts,

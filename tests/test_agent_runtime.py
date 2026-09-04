@@ -14,6 +14,7 @@ import pytest
 from conftest import ScriptedClient, refusal_message, text_message, tool_use_message
 from memgit.agent.client import AgentError
 from memgit.agent.runtime import MemoryAgent
+from memgit.core.fact import Fact
 
 
 class TestNoOpTurns:
@@ -238,4 +239,122 @@ class TestMemoryCrossesTurnsTranscriptDoesNot:
         roles_and_texts = [(m["role"], m.get("content")) for m in agent.transcript]
         assert any(role == "user" and content == "first" for role, content in roles_and_texts)
         assert any(role == "user" and content == "second" for role, content in roles_and_texts)
+
+
+def _seed_many_facts(repo, count: int) -> None:
+    """Commit ``count`` distinct facts directly, bypassing the agent — used
+    to push a repo's fact count over the retrieval threshold without
+    scripting one tool call per fact."""
+    facts = [
+        Fact(subject="user", predicate=f"fact_{i}", object=f"value_{i}", confidence=0.9)
+        for i in range(count)
+    ]
+    repo.commit(facts, "seed many facts", author="test")
+
+
+class TestRetrievalMode:
+    def test_below_threshold_uses_full_injection_and_offers_no_recall(self, agent_repo):
+        client = ScriptedClient(responses=[text_message("hi")])
+        agent = MemoryAgent(agent_repo, client=client)
+
+        agent.turn("hello")
+
+        tool_names = {schema["name"] for schema in client.requests[0]["tools"]}
+        assert "recall" not in tool_names
+        assert len(client.requests[0]["system"]) == 2
+
+    def test_at_or_above_threshold_offers_recall_and_uses_three_blocks(self, agent_repo):
+        _seed_many_facts(agent_repo, 64)
+        client = ScriptedClient(responses=[text_message("hi")])
+        agent = MemoryAgent(agent_repo, client=client)
+
+        agent.turn("what do you know about fact_5?")
+
+        tool_names = {schema["name"] for schema in client.requests[0]["tools"]}
+        assert "recall" in tool_names
+        assert len(client.requests[0]["system"]) == 3
+
+    def test_recall_tool_call_leaves_working_state_unchanged_and_commits_nothing(self, agent_repo):
+        _seed_many_facts(agent_repo, 64)
+        call = ("call_1", "recall", {"query": "fact_5", "subject": None, "limit": 3})
+        client = ScriptedClient(responses=[tool_use_message(call), text_message("Found it.")])
+        agent = MemoryAgent(agent_repo, client=client)
+
+        result = agent.turn("what do you know about fact_5?")
+
+        assert result.commit is None  # recall is read-only
+
+    def test_recall_call_while_retrieval_off_is_an_error_the_model_can_recover_from(self, agent_repo):
+        # Force a `recall` call even though the repo is small (full-injection
+        # mode) -- simulates a model calling a tool it wasn't offered.
+        call = ("call_1", "recall", {"query": "anything", "subject": None, "limit": 3})
+        client = ScriptedClient(responses=[tool_use_message(call), text_message("ok")])
+        agent = MemoryAgent(agent_repo, client=client)
+
+        agent.turn("hello")
+
+        second_request = client.requests[1]
+        tool_result_message = [m for m in second_request["messages"] if m["role"] == "user"][-1]
+        assert tool_result_message["content"][0]["is_error"] is True
+
+    def test_recall_searches_before_not_working_within_the_same_turn(self, agent_repo):
+        """A fact just `remember`-ed this turn should not be recall-able
+        within that same turn -- recall only sees committed history."""
+        remember_call = ("call_1", "remember", {
+            "subject": "user", "predicate": "brand_new_fact", "object": "just now",
+            "confidence": 0.9, "source_text": "x",
+        })
+        _seed_many_facts(agent_repo, 64)
+        recall_call = ("call_2", "recall", {"query": "brand_new_fact just now", "subject": None, "limit": 5})
+        client = ScriptedClient(responses=[
+            tool_use_message(remember_call),
+            tool_use_message(recall_call),
+            text_message("done"),
+        ])
+        agent = MemoryAgent(agent_repo, client=client)
+
+        agent.turn("remember something and then recall it")
+
+        third_request = client.requests[2]
+        recall_result = [m for m in third_request["messages"] if m["role"] == "user"][-1]
+        assert "brand_new_fact" not in recall_result["content"][0]["content"]
+
+    def test_a_turn_that_retrieves_a_subset_still_commits_the_full_state(self, agent_repo):
+        """The mass-deletion guard: retrieval must never narrow what a turn
+        commits, only what gets rendered into the prompt."""
+        _seed_many_facts(agent_repo, 64)
+        remember_call = ("call_1", "remember", {
+            "subject": "user", "predicate": "one_more_fact", "object": "added this turn",
+            "confidence": 0.9, "source_text": "x",
+        })
+        client = ScriptedClient(responses=[tool_use_message(remember_call), text_message("Noted.")])
+        agent = MemoryAgent(agent_repo, client=client)
+
+        result = agent.turn("remember one more thing")
+
+        assert result.commit is not None
+        state = agent_repo.state()
+        assert len(state) == 65  # the original 64, untouched, plus the new one
+
+    def test_commit_metadata_records_full_mode(self, agent_repo):
+        client = ScriptedClient(responses=[text_message("hi")])
+        agent = MemoryAgent(agent_repo, client=client, record_empty=True)
+
+        result = agent.turn("hello")
+
+        commit = agent_repo.read_commit(result.commit)
+        assert commit.metadata["retrieval"] == {"mode": "full"}
+
+    def test_commit_metadata_records_top_k_mode_and_injected_hashes(self, agent_repo):
+        _seed_many_facts(agent_repo, 64)
+        client = ScriptedClient(responses=[text_message("hi")])
+        agent = MemoryAgent(agent_repo, client=client, record_empty=True)
+
+        result = agent.turn("what do you know about fact_5?")
+
+        commit = agent_repo.read_commit(result.commit)
+        retrieval_meta = commit.metadata["retrieval"]
+        assert retrieval_meta["mode"] == "top_k"
+        assert isinstance(retrieval_meta["injected"], list)
+        assert retrieval_meta["embedder"].startswith("hash-v1/")
 

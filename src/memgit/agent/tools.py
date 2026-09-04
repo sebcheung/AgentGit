@@ -1,31 +1,36 @@
-"""The tool surface an agent uses to write memory: ``remember`` and ``forget``.
+"""The tool surface an agent uses to touch memory: ``remember``, ``forget``, ``recall``.
 
-Exactly these two, not more. ``remember`` is the locked-in decision in
-PLAN.md — "Agent calls ``remember(...)`` deliberately as a tool: structured
-at birth, no extraction step, no parsing noise." ``forget`` earns its place
-alongside it because without it a belief can be *revised* (a ``remember`` at
-a ``single`` key contradicts the old value) but never *retracted* — and
+``remember`` is the locked-in decision in PLAN.md — "Agent calls
+``remember(...)`` deliberately as a tool: structured at birth, no
+extraction step, no parsing noise." ``forget`` earns its place alongside it
+because without it a belief can be *revised* (a ``remember`` at a
+``single`` key contradicts the old value) but never *retracted* — and
 ``removed``/``value_removed`` are two of the diff engine's eight change
 kinds. A tool surface that can never emit them would leave a quarter of the
 taxonomy dead code on the agent path.
 
-Two tools deliberately **not** here:
+One tool deliberately **not** here:
 
 - ``reaffirm`` — a ``remember`` of the same triple at a new confidence
   already *is* a reaffirmation; :meth:`Fact.reaffirm` and the diff engine's
   ``reaffirmed`` kind handle it without the model ever having to choose
   between two verbs for one intention.
-- ``recall`` — the whole memory state is already injected into the system
-  prompt in this slice (see ``prompt.py``). A second read path would let the
-  model act on facts it was never shown, which is exactly the kind of leak
-  PLAN.md's retrieval-layer decision warns against. It earns its place once
-  slice 7 replaces full injection with scoped retrieval.
+
+``recall`` earns its place as of slice 7: full-context injection is no
+longer the only mode (see ``prompt.py``), and once a turn only sees the
+top-k most relevant facts, the model needs a second read path for the rest
+of what it knows. ``runtime.py`` offers ``recall`` *only* in retrieval mode
+— under full injection there is nothing to recall, and offering it anyway
+would let the model act on facts it was shown twice under two different
+guises, which is not the leak PLAN.md's retrieval-layer decision warns
+about, but is exactly as pointless.
 
 This module has no dependency on ``Repository``, an LLM client, or the
 network — only on :class:`~memgit.core.fact.Fact`. That is deliberate:
 slice 8's MCP server is documented in PLAN.md as "moved up — the tool-call
 fact-write decision makes this nearly the same code as slice 4," and this is
-the code it shares.
+the code it shares. ``recall``'s *decoder* lives here for the same reason;
+the retrieval it triggers is the runtime's job, not this module's.
 """
 
 from __future__ import annotations
@@ -38,12 +43,17 @@ from memgit.core.fact import Fact, FactKey
 __all__ = [
     "REMEMBER_SCHEMA",
     "FORGET_SCHEMA",
+    "RECALL_SCHEMA",
     "TOOL_SCHEMAS",
+    "WRITE_TOOL_SCHEMAS",
     "RememberCall",
     "ForgetCall",
+    "RecallCall",
     "ToolCallError",
     "decode_remember",
     "decode_forget",
+    "decode_recall",
+    "tool_schemas",
 ]
 
 REMEMBER_SCHEMA: dict[str, Any] = {
@@ -124,7 +134,53 @@ FORGET_SCHEMA: dict[str, Any] = {
     },
 }
 
-TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (REMEMBER_SCHEMA, FORGET_SCHEMA)
+RECALL_SCHEMA: dict[str, Any] = {
+    "name": "recall",
+    "description": (
+        "Search your long-term memory for facts relevant to a query. The "
+        "facts shown in your system prompt are only the subset most "
+        "relevant to this turn — use recall before concluding you have no "
+        "belief about something, or before contradicting a key you can see "
+        "in the key inventory but wasn't shown in full. Read-only: it never "
+        "changes memory."
+    ),
+    "strict": True,
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "What to search for, in natural language.",
+            },
+            "subject": {
+                "type": ["string", "null"],
+                "description": "Restrict the search to this subject, or null to search every subject.",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 25,
+                "description": "How many facts to return.",
+            },
+        },
+        "required": ["query", "subject", "limit"],
+        "additionalProperties": False,
+    },
+}
+
+WRITE_TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (REMEMBER_SCHEMA, FORGET_SCHEMA)
+TOOL_SCHEMAS: tuple[dict[str, Any], ...] = WRITE_TOOL_SCHEMAS
+
+
+def tool_schemas(*, recall: bool) -> tuple[dict[str, Any], ...]:
+    """The tool schemas to offer this turn.
+
+    ``recall`` should track whether the prompt is in retrieval mode
+    (``runtime.py`` passes ``retriever is not None``) — offering it under
+    full injection would give the model a redundant way to see what it was
+    already shown in full.
+    """
+    return (*WRITE_TOOL_SCHEMAS, RECALL_SCHEMA) if recall else WRITE_TOOL_SCHEMAS
 
 
 class ToolCallError(ValueError):
@@ -160,6 +216,21 @@ class ForgetCall:
     key: FactKey
     object: str | None
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class RecallCall:
+    """A decoded ``recall`` call: what to search for, and how narrowly.
+
+    Attributes:
+        subject: Restrict the search to this subject, or ``None`` for every
+            subject in scope.
+        limit: How many facts the caller asked for.
+    """
+
+    query: str
+    subject: str | None
+    limit: int
 
 
 def decode_remember(payload: dict[str, Any], *, source: str) -> RememberCall:
@@ -222,3 +293,27 @@ def decode_forget(payload: dict[str, Any]) -> ForgetCall:
         raise ToolCallError("forget: object must be a string or null")
 
     return ForgetCall(key=(subject, predicate), object=object_, reason=reason)
+
+
+def decode_recall(payload: dict[str, Any]) -> RecallCall:
+    """Turn a ``recall`` tool call's input into a :class:`RecallCall`.
+
+    Raises:
+        ToolCallError: a required key is missing, or a field has the wrong
+            shape.
+    """
+    try:
+        query = payload["query"]
+        subject = payload["subject"]
+        limit = payload["limit"]
+    except KeyError as exc:
+        raise ToolCallError(f"recall: missing required field {exc.args[0]!r}") from exc
+
+    if not isinstance(query, str) or not query.strip():
+        raise ToolCallError("recall: query must be a non-empty string")
+    if subject is not None and not isinstance(subject, str):
+        raise ToolCallError("recall: subject must be a string or null")
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+        raise ToolCallError("recall: limit must be a positive integer")
+
+    return RecallCall(query=query, subject=subject, limit=limit)
