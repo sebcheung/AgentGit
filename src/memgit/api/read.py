@@ -20,7 +20,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from memgit import __version__
-from memgit.api.deps import get_repo
+from memgit.api.deps import get_repo, retrieval_lock
 from memgit.api.models import (
     CommitDetail,
     CommitNode,
@@ -28,6 +28,8 @@ from memgit.api.models import (
     HeadModel,
     HealthResponse,
     LogResponse,
+    RecalledFact,
+    RecallResponse,
     RepoResponse,
     StateResponse,
 )
@@ -201,4 +203,63 @@ def get_diff(
         resolved_after=resolved_after,
         use_merge_base=use_merge_base,
         diff=result.to_dict(),
+    )
+
+
+@router.get("/recall", response_model=RecallResponse)
+def recall(
+    query: Annotated[str, Query(min_length=1)],
+    rev: Annotated[str, Query()] = "HEAD",
+    k: Annotated[int, Query(ge=1, le=100)] = 8,
+    subject: Annotated[str | None, Query()] = None,
+    min_score: Annotated[float, Query(ge=0.0)] = 0.0,
+    as_of: Annotated[str | None, Query()] = None,
+    decay: Annotated[bool, Query()] = True,
+    repo: Repository = Depends(get_repo),
+) -> RecallResponse:
+    """The same :class:`~memgit.retrieval.rank.Retriever` code path
+    ``memgit recall`` and a retrieval-mode agent turn use, scoped to
+    ``rev`` by construction rather than by a filter that could leak a
+    later commit or another branch. See ``deps.retrieval_lock`` for why
+    this acquires a lock: a cache miss here writes to the vector index,
+    and this API is the project's first concurrent caller of it.
+    """
+    resolved = repo.resolve(rev)
+    state = repo.state(resolved)
+    weight = 0.0 if not decay else None
+    moment = _parse_as_of(as_of) if as_of is not None else datetime.now(timezone.utc)
+
+    with retrieval_lock:
+        retriever = repo.retriever(confidence_weight=weight)
+        result = retriever.retrieve(
+            state,
+            query,
+            k=k,
+            as_of=moment,
+            subjects={subject} if subject is not None else None,
+            min_score=min_score,
+        )
+
+    return RecallResponse(
+        query=result.query,
+        rev=rev,
+        resolved=resolved,
+        commit=result.commit,
+        candidates=result.candidates,
+        embedder=result.embedder,
+        as_of=result.as_of,
+        facts=[
+            RecalledFact(
+                subject=r.fact.subject,
+                predicate=r.fact.predicate,
+                object=r.fact.object,
+                confidence=r.confidence,
+                asserted_at=r.fact.asserted_at,
+                source=r.fact.source,
+                source_text=r.fact.source_text,
+                score=r.score,
+                similarity=r.similarity,
+            )
+            for r in result.facts
+        ],
     )
