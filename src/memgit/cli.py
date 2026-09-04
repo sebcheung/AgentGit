@@ -26,6 +26,9 @@ from memgit.core.repository import (
 )
 from memgit.core.store import CorruptObjectError, ObjectNotFoundError, hash_object
 from memgit.core.tree import EMPTY_TREE_HASH
+from memgit.eval.case import EvalFormatError, EvalSuite, load_suites
+from memgit.eval.runner import run_suite
+from memgit.eval.sweep import sweep
 from memgit.retrieval.embed import embed_text
 
 app = typer.Typer(
@@ -1081,6 +1084,81 @@ def chat_cmd(
             typer.secho(str(exc), fg=typer.colors.RED, err=True)
             continue
         _print_turn_result(repo, result)
+
+
+def _eval_run(repo: Repository, suites: tuple[EvalSuite, ...], rev: str, *, json_output: bool) -> None:
+    results = tuple(run_suite(repo, suite, rev) for suite in suites)
+    cases = [case for result in results for case in result.cases]
+    failed = [case for case in cases if not case.ok]
+
+    if json_output:
+        typer.echo(json.dumps([result.to_dict() for result in results], indent=2, ensure_ascii=False))
+    else:
+        for case in cases:
+            if case.ok:
+                typer.secho(f"PASS  {case.case_id}", fg=typer.colors.GREEN)
+            else:
+                typer.secho(f"FAIL  {case.case_id}", fg=typer.colors.RED)
+                for failure in case.failures:
+                    typer.echo(f"        {failure.detail}")
+        typer.echo(f"{len(cases) - len(failed)}/{len(cases)} passed")
+
+    if failed:
+        raise typer.Exit(code=1)
+
+
+def _eval_since(repo: Repository, suites: tuple[EvalSuite, ...], since: str, until: str, *, json_output: bool) -> None:
+    firsts = tuple(failure for suite in suites for failure in sweep(repo, suite, since=since, until=until))
+
+    if json_output:
+        typer.echo(json.dumps([failure.to_dict() for failure in firsts], indent=2, ensure_ascii=False))
+    elif not firsts:
+        typer.secho("no regressions between the two revisions", fg=typer.colors.GREEN)
+    else:
+        for failure in firsts:
+            typer.secho(f"FAIL  {failure.case_id}  first broke at {failure.commit[:8]}", fg=typer.colors.RED)
+            typer.echo(f"        {failure.message}")
+
+    if firsts:
+        raise typer.Exit(code=1)
+
+
+@app.command("eval")
+def eval_cmd(
+    rev: str = typer.Argument("HEAD", help="Revision to evaluate."),
+    suite: Path = typer.Option(
+        None, "--suite", help="Suite file or directory. Defaults to .memgit/eval/."
+    ),
+    since: str = typer.Option(
+        None, "--since", help="Sweep SINCE..REV, reporting each case's first failing commit."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Run every declared eval case and flag memory regressions.
+
+    Checks assert on memory state, diffs, and retrieval — never on a model's
+    reply — so this needs no API key and is safe to run in CI: exit code 1
+    means at least one case failed. Cases live in ``.memgit/eval/*.json``
+    (see ``EvalCase``/``EvalSuite``). Use ``--since`` to find which commit
+    broke a case, rather than only whether one is broken right now.
+    """
+    repo = _repo()
+    try:
+        suites = load_suites(repo, suite)
+    except EvalFormatError as exc:
+        _fail(str(exc))
+        return
+    if not suites or not any(s.cases for s in suites):
+        typer.secho("no eval cases declared (see .memgit/eval/*.json)", fg=typer.colors.YELLOW)
+        return
+
+    try:
+        if since is not None:
+            _eval_since(repo, suites, since, rev, json_output=json_output)
+        else:
+            _eval_run(repo, suites, rev, json_output=json_output)
+    except RevisionNotFoundError as exc:
+        _fail(str(exc))
 
 
 cardinality_app = typer.Typer(help="Inspect and edit the diff engine's single/multi schema.")
