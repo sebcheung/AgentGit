@@ -72,6 +72,16 @@ from memgit.retrieval.embed import Embedder, default_embedder
 from memgit.retrieval.index import VectorIndex
 from memgit.retrieval.rank import Retriever
 from memgit.core.revparse import AncestryError, RevSyntaxError, apply_steps, parse_revision
+from memgit.core.staging import (
+    StagingArea,
+    drop_staging,
+    list_staging,
+    open_staging,
+    read_staging,
+    session_key,
+    stage as _stage_facts,
+    touched_keys,
+)
 from memgit.core.state import MemoryState
 from memgit.core.store import (
     AmbiguousPrefixError,
@@ -822,6 +832,167 @@ class Repository:
         """
         tree = self.read_tree(rev)
         return MemoryState.from_tree(tree, self.read_fact, commit=self.resolve(rev))
+
+    # -- staging (slice 8: MCP write sessions) ------------------------------
+
+    def _write_branch_ref(self, branch: str | None) -> str:
+        """The full ref path a write session commits onto.
+
+        Defaults to the repository's configured ``default_branch`` — **never
+        HEAD** — because HEAD is the human's cursor at the CLI: an MCP
+        session's memory should not relocate because someone ran
+        ``memgit checkout`` in another terminal, and a detached HEAD would
+        make the session's commits reachable from nothing at all.
+        """
+        name = branch if branch is not None else self.config().get("default_branch", "main")
+        return name if name.startswith("refs/") else f"refs/heads/{name}"
+
+    def staging_area(self, key: str) -> StagingArea | None:
+        """The staging area at hashed key ``key`` (see
+        :func:`~memgit.core.staging.session_key`), or ``None`` if nothing is
+        staged there. Read-only — never opens one; see :meth:`stage`.
+        """
+        return read_staging(self, key)
+
+    def staging_areas(self) -> tuple[StagingArea, ...]:
+        """Every open staging area, for ``memgit status`` / ``memgit staging list``."""
+        return list_staging(self)
+
+    def drop_staging(self, key: str) -> None:
+        """Discard the staging area at hashed key ``key``. A no-op if absent."""
+        drop_staging(self, key)
+
+    def open_staging(self, session_id: str, *, branch: str | None = None) -> StagingArea:
+        """Return ``session_id``'s staging area, opening it against
+        ``branch``'s current tip if this is the session's first write.
+
+        ``session_id`` is the caller's own identifier (an MCP transport
+        session id, typically); it is hashed via
+        :func:`~memgit.core.staging.session_key` before ever touching a ref
+        path, and the resulting :class:`StagingArea` carries the hashed
+        ``key`` a human can pass to ``memgit staging show``. Call this (or
+        keep the ``StagingArea`` a previous :meth:`stage` call returned)
+        before folding one more ``remember``/``forget`` onto its facts, so
+        the fold has a ``.tree`` to pass as :meth:`stage`'s ``based_on``.
+        """
+        key = session_key(session_id)
+        return open_staging(self, key, branch_ref=self._write_branch_ref(branch))
+
+    def stage(
+        self, session_id: str, facts: Iterable[Fact], *, based_on: str
+    ) -> StagingArea:
+        """Replace ``session_id``'s staged fact set with ``facts`` (the whole
+        set, not a delta — matching :meth:`commit`'s own contract).
+
+        Args:
+            based_on: The tree hash ``facts`` were folded against — a
+                previous :meth:`open_staging` or :meth:`stage` call's
+                ``.tree``. See :func:`memgit.core.staging.stage` for why this
+                must be the value the caller actually saw, never re-read
+                internally: that is what makes the compare-and-swap below
+                capable of detecting a concurrent writer at all.
+
+        Raises:
+            ~memgit.core.staging.StagingConflictError: another writer moved
+                this session's staging area past ``based_on`` first. The
+                caller re-reads the area, re-applies its fold on top of the
+                new value, and retries once — this method does not retry on
+                its own, since only the caller knows how to redo the fold
+                that produced the losing write.
+        """
+        key = session_key(session_id)
+        return _stage_facts(self, key, list(facts), based_on=based_on)
+
+    def seal_staging(
+        self,
+        session_id: str,
+        message: str,
+        *,
+        branch: str | None = None,
+        author: str = "unknown",
+        metadata: Mapping[str, Any] | None = None,
+    ) -> str | None:
+        """Commit ``session_id``'s staged facts onto ``branch``; drop the
+        staging area either way.
+
+        Sealing does **not** commit the staged tree wholesale: if the target
+        branch has moved since staging began, doing so would silently
+        discard every fact another writer added since. Instead it computes
+        which ``(subject, predicate)`` keys *this session* touched (a
+        structural comparison against its own ``base``, not a full diff) and
+        :meth:`overlay`s just those onto the branch's current tip — the
+        common case (``base`` still equals the tip) costs one structural
+        comparison and produces a tree bit-identical to committing the
+        staged tree wholesale; a diverged tip loses nothing untouched by this
+        session. A key both sessions touched has no principled merge (no
+        slice owns that), so it is recorded in the new commit's
+        ``restaged_over`` metadata rather than silently resolved — the same
+        posture :func:`~memgit.core.graph.merge_base` already takes for
+        divergent branches.
+
+        Returns:
+            The new commit's hash, or ``None`` if nothing was staged, or
+            this session touched no keys, or the resulting commit would have
+            been empty (:class:`EmptyCommitError` is swallowed here, not
+            raised, since a model calling ``commit`` after a no-op turn
+            should be told nothing happened, not handed a tool error).
+        """
+        return self.seal_staging_key(
+            session_key(session_id), message, branch=branch, author=author, metadata=metadata
+        )
+
+    def seal_staging_key(
+        self,
+        key: str,
+        message: str,
+        *,
+        branch: str | None = None,
+        author: str = "unknown",
+        metadata: Mapping[str, Any] | None = None,
+    ) -> str | None:
+        """:meth:`seal_staging`, keyed directly by an already-hashed staging
+        key rather than a raw session id.
+
+        For ``memgit staging commit <key>`` — the CLI never has the MCP
+        session's raw id, only the hashed key ``memgit staging`` already
+        printed, and hashing that key a second time would look up the wrong
+        ref entirely. :meth:`seal_staging` is just this method behind one
+        extra hashing step.
+        """
+        area = read_staging(self, key)
+        if area is None:
+            return None
+
+        branch_ref = self._write_branch_ref(branch)
+        base_tree = self.read_tree(area.base) if area.base is not None else Tree(())
+        staged_tree = self.read_tree(area.tree)
+        touched = touched_keys(base_tree, staged_tree)
+        if not touched:
+            drop_staging(self, key)
+            return None
+
+        tip_hash = self.refs.read_ref(branch_ref)
+        tip_tree = self.read_tree(tip_hash) if tip_hash is not None else Tree(())
+        facts = self.overlay(tip_tree, staged_tree, touched)
+
+        moved_since_base = touched_keys(base_tree, tip_tree)
+        restaged_over = sorted(set(touched) & set(moved_since_base))
+
+        full_metadata = dict(metadata) if metadata is not None else {}
+        full_metadata["staged_on"] = area.base
+        if restaged_over:
+            full_metadata["restaged_over"] = restaged_over
+
+        try:
+            commit_hash = self.commit(
+                facts, message, author=author, metadata=full_metadata, onto=branch_ref
+            )
+        except EmptyCommitError:
+            drop_staging(self, key)
+            return None
+
+        drop_staging(self, key)
+        return commit_hash
 
     def __repr__(self) -> str:
         return f"Repository({str(self.memgit_dir)!r})"
