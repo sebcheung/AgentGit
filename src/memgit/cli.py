@@ -1466,9 +1466,9 @@ def project_cmd() -> None:
     unmoved repository does no work. Needs the `pg` extra and
     `$DATABASE_URL` (or `docker compose up db`).
     """
+    engine = _pg_engine_or_fail()
     from memgit.pg.project import project as run_projection
 
-    engine = _pg_engine_or_fail()
     result = run_projection(_repo(), engine)
     typer.echo(f"{result.commits_added} commit(s), {result.facts_added} fact(s) added")
 
@@ -1483,9 +1483,9 @@ def blame_cmd(
     Reads the Postgres projection — run `memgit project` first to sync it;
     this command never reads the object store directly.
     """
+    engine = _pg_engine_or_fail()
     from memgit.pg.queries import blame as run_blame
 
-    engine = _pg_engine_or_fail()
     entries = run_blame(engine, subject, predicate)
     if not entries:
         typer.echo(f"no history for {subject} {predicate} -- run `memgit project` if this looks stale")
@@ -1497,9 +1497,9 @@ def blame_cmd(
 @app.command("stats")
 def stats_cmd() -> None:
     """Storage stats from the Postgres projection: dedup ratio, fact and tree-entry counts."""
+    engine = _pg_engine_or_fail()
     from memgit.pg.queries import dedup_stats
 
-    engine = _pg_engine_or_fail()
     stats = dedup_stats(engine)
     plural = "y" if stats.total_tree_entries == 1 else "ies"
     typer.echo(f"{stats.distinct_facts} distinct fact(s), {stats.total_tree_entries} tree entr{plural}")
