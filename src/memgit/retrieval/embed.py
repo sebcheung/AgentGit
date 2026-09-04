@@ -34,7 +34,7 @@ import hashlib
 import math
 import re
 from collections.abc import Sequence
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from memgit.core.fact import Fact
 
@@ -173,7 +173,7 @@ def embed_text(fact: Fact) -> str:
     return text
 
 
-def default_embedder(config: dict | None = None) -> Embedder:
+def default_embedder(config: dict[str, Any] | None = None) -> Embedder:
     """The repo's configured embedder, or :class:`HashingEmbedder` if unset.
 
     Mirrors :func:`~memgit.agent.client.default_client`'s shape: a factory

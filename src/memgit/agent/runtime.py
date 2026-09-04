@@ -194,23 +194,24 @@ def _apply_tool_call(
     """
     try:
         if block.name == "remember":
-            call = decode_remember(block.input, source=source)
-            working = apply_remember(working, call, cardinality)
-            content = f"remembered {call.fact.subject} {call.fact.predicate} {call.fact.object}"
+            remember_call = decode_remember(block.input, source=source)
+            working = apply_remember(working, remember_call, cardinality)
+            fact = remember_call.fact
+            content = f"remembered {fact.subject} {fact.predicate} {fact.object}"
         elif block.name == "forget":
-            call = decode_forget(block.input)
-            working = apply_forget(working, call)
-            target = call.key[0] + " " + call.key[1]
-            content = f"forgot {target}" + (f"={call.object}" if call.object else " (all values)")
+            forget_call = decode_forget(block.input)
+            working = apply_forget(working, forget_call)
+            target = forget_call.key[0] + " " + forget_call.key[1]
+            content = f"forgot {target}" + (f"={forget_call.object}" if forget_call.object else " (all values)")
         elif block.name == "recall" and retriever is not None:
             assert recall_state is not None and as_of is not None
-            call = decode_recall(block.input)
+            recall_call = decode_recall(block.input)
             result = retriever.retrieve(
                 recall_state,
-                call.query,
-                k=call.limit,
+                recall_call.query,
+                k=recall_call.limit,
                 as_of=as_of,
-                subjects={call.subject} if call.subject is not None else None,
+                subjects={recall_call.subject} if recall_call.subject is not None else None,
             )
             content = result.render()
         else:

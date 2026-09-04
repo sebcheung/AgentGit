@@ -27,7 +27,7 @@ this module, not registering a plugin.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -251,7 +251,7 @@ class EvalSuite:
     name: str
     cases: tuple[EvalCase, ...]
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[EvalCase]:
         return iter(self.cases)
 
     def __len__(self) -> int:

@@ -6,7 +6,7 @@ import json
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import typer
 
@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from memgit.agent.runtime import MemoryAgent, TurnResult
 
 from memgit import __version__
+from memgit.core.cardinality import Cardinality
 from memgit.core.commit import Commit
 from memgit.core.diff import ChangeKind, Diff
 from memgit.core.fact import Fact
@@ -959,7 +960,7 @@ def replay_cmd(
         return
 
     if as_json:
-        payload = {
+        payload: dict[str, Any] = {
             "query": result.query,
             "key": list(result.key),
             "fact_hash": result.fact_hash,
@@ -1188,7 +1189,7 @@ def cardinality_set_cmd(
         _fail(f"cardinality must be 'single' or 'multi', got {cardinality!r}")
         return
     repo = _repo()
-    repo.set_cardinality(repo.cardinality().with_predicate(predicate, cardinality))
+    repo.set_cardinality(repo.cardinality().with_predicate(predicate, cast(Cardinality, cardinality)))
 
 
 @cardinality_app.command("unset")
