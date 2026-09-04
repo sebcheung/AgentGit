@@ -24,9 +24,9 @@ which is also what makes both extremes easy to test independently.
 from __future__ import annotations
 
 import math
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Collection
 
 from memgit.core.decay import DecayPolicy
 from memgit.core.fact import Fact
@@ -34,7 +34,7 @@ from memgit.core.state import MemoryState
 from memgit.retrieval.embed import Embedder, embed_text
 from memgit.retrieval.index import VectorIndex
 
-__all__ = ["cosine", "Retrieved", "RetrievalResult", "Retriever"]
+__all__ = ["RetrievalResult", "Retrieved", "Retriever", "cosine"]
 
 _DEFAULT_CONFIDENCE_WEIGHT = 0.25
 
@@ -46,7 +46,7 @@ def cosine(a: tuple[float, ...], b: tuple[float, ...]) -> float:
     zero — an empty-text embedding (see ``HashingEmbedder``) is a legitimate
     input, not an error.
     """
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(y * y for y in b))
     if norm_a == 0.0 or norm_b == 0.0:

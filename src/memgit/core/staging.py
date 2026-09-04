@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING
 
 from memgit.core.fact import Fact, FactKey
 from memgit.core.tree import EMPTY_TREE_HASH, Tree
@@ -45,7 +45,7 @@ from memgit.core.tree import EMPTY_TREE_HASH, Tree
 if TYPE_CHECKING:
     from memgit.core.repository import Repository
 
-__all__ = ["StagingArea", "session_key", "StagingConflictError"]
+__all__ = ["StagingArea", "StagingConflictError", "session_key"]
 
 STAGING_PREFIX = "refs/memgit/staging"
 
@@ -61,8 +61,7 @@ class StagingConflictError(Exception):
 
 
 def session_key(session_id: str) -> str:
-    """Map an external session id to the filesystem-safe key its staging
-    area lives under.
+    """Map an external session id to the filesystem-safe key its staging area lives under.
 
     Never use a raw session id as a ref path component. A ref name only
     forbids ``../`` and a handful of other shapes (see
@@ -105,7 +104,7 @@ class StagingArea:
     base: str | None
 
 
-def read_staging(repo: "Repository", key: str) -> StagingArea | None:
+def read_staging(repo: Repository, key: str) -> StagingArea | None:
     """The staging area at ``key``, or ``None`` if nothing is staged there."""
     tree_hash = repo.refs.read_ref(_tree_ref(key))
     if tree_hash is None:
@@ -114,7 +113,7 @@ def read_staging(repo: "Repository", key: str) -> StagingArea | None:
     return StagingArea(key=key, tree=tree_hash, base=base)
 
 
-def list_staging(repo: "Repository") -> tuple[StagingArea, ...]:
+def list_staging(repo: Repository) -> tuple[StagingArea, ...]:
     """Every open staging area, sorted by key.
 
     A tree ref with no matching ``base`` ref is a staging area opened on an
@@ -132,9 +131,8 @@ def list_staging(repo: "Repository") -> tuple[StagingArea, ...]:
     return tuple(areas)
 
 
-def open_staging(repo: "Repository", key: str, *, branch_ref: str) -> StagingArea:
-    """Return ``key``'s staging area, creating it against ``branch_ref``'s
-    current tip if it does not exist yet.
+def open_staging(repo: Repository, key: str, *, branch_ref: str) -> StagingArea:
+    """Return ``key``'s staging area, opening one against ``branch_ref``'s tip if it doesn't exist yet.
 
     A freshly opened area's tree starts identical to the branch tip's own
     tree — staging a memory state is not staging a *change*, it is staging a
@@ -160,10 +158,11 @@ def open_staging(repo: "Repository", key: str, *, branch_ref: str) -> StagingAre
     return StagingArea(key=key, tree=tree_hash, base=base_hash)
 
 
-def stage(repo: "Repository", key: str, facts: list[Fact], *, based_on: str) -> StagingArea:
-    """Replace ``key``'s staged fact set with ``facts`` (the whole set, not a
-    delta — matching :meth:`~memgit.core.repository.Repository.commit`'s own
-    contract).
+def stage(repo: Repository, key: str, facts: list[Fact], *, based_on: str) -> StagingArea:
+    """Replace ``key``'s staged fact set with ``facts``.
+
+    The whole set, not a delta — matching
+    :meth:`~memgit.core.repository.Repository.commit`'s own contract.
 
     Args:
         based_on: The staged tree hash ``facts`` were folded against —
@@ -193,7 +192,7 @@ def stage(repo: "Repository", key: str, facts: list[Fact], *, based_on: str) -> 
     return StagingArea(key=key, tree=new_tree_hash, base=base)
 
 
-def drop_staging(repo: "Repository", key: str) -> None:
+def drop_staging(repo: Repository, key: str) -> None:
     """Discard ``key``'s staging area. A no-op if nothing was staged there.
 
     Deletion is logged by the same :class:`~memgit.core.reflog.RefLogger`
@@ -207,8 +206,7 @@ def drop_staging(repo: "Repository", key: str) -> None:
 
 
 def touched_keys(base_tree: Tree, staged_tree: Tree) -> list[FactKey]:
-    """Which ``(subject, predicate)`` keys differ between ``base_tree`` and
-    ``staged_tree``.
+    """Which ``(subject, predicate)`` keys differ between ``base_tree`` and ``staged_tree``.
 
     A structural comparison of hash tuples, not a call into the diff engine:
     sealing only needs to know *which* keys this session touched, not how to

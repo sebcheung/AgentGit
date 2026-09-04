@@ -49,26 +49,27 @@ object twice is a redundant reassertion, not two rival beliefs.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Callable, Iterator, Literal, Mapping
+from typing import Any, Literal
 
 from memgit.core.cardinality import Cardinality, CardinalityMap
 from memgit.core.fact import Fact, FactKey
 from memgit.core.tree import Tree
 
 __all__ = [
-    "FactReader",
-    "ValueKind",
-    "ValueChange",
-    "ChangeKind",
-    "KeyDiff",
     "CardinalityViolation",
-    "DiffStat",
+    "ChangeKind",
     "Diff",
+    "DiffStat",
+    "FactReader",
+    "HashDiff",
     "HashKeyChange",
     "HashKeyEntry",
-    "HashDiff",
+    "KeyDiff",
+    "ValueChange",
+    "ValueKind",
     "diff_hashes",
     "diff_trees",
 ]
@@ -84,7 +85,7 @@ FactReader = Callable[[str], Fact]
 def _merge_join(
     before: Tree, after: Tree
 ) -> Iterator[tuple[FactKey, tuple[str, ...] | None, tuple[str, ...] | None]]:
-    """Yield every key in either tree, exactly once, in sorted order.
+    r"""Yield every key in either tree, exactly once, in sorted order.
 
     Linear in ``len(before) + len(after)``: one pass over both trees' already
     -sorted entries, no dict built, no per-key allocation beyond the yielded
@@ -150,6 +151,7 @@ class HashDiff:
     entries: tuple[HashKeyEntry, ...]
 
     def changed_keys(self) -> tuple[FactKey, ...]:
+        """Every key whose hash set is not identical on both sides."""
         return tuple(key for key, kind, _b, _a in self.entries if kind != HashKeyChange.UNCHANGED)
 
     def __iter__(self) -> Iterator[HashKeyEntry]:
@@ -209,11 +211,13 @@ class ValueChange:
 
     @property
     def is_strengthened(self) -> bool:
+        """True if a reaffirmation raised confidence."""
         delta = self.confidence_delta
         return delta is not None and delta > 0
 
     @property
     def is_weakened(self) -> bool:
+        """True if a reaffirmation lowered confidence."""
         delta = self.confidence_delta
         return delta is not None and delta < 0
 
@@ -231,8 +235,11 @@ class ValueChange:
 
 
 class ChangeKind(StrEnum):
-    """The key-level summary of a :class:`KeyDiff` — see module docstring for the
-    ordered collapse rule that derives this from ``values``."""
+    """The key-level summary of a :class:`KeyDiff`.
+
+    See the module docstring for the ordered collapse rule that derives this
+    from ``values``.
+    """
 
     UNCHANGED = "unchanged"
     ADDED = "added"
@@ -258,6 +265,7 @@ class CardinalityViolation:
     objects: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize to the JSON-ready shape the CLI and API report."""
         return {"key": list(self.key), "side": self.side, "objects": list(self.objects)}
 
 
@@ -276,17 +284,21 @@ class KeyDiff:
 
     @property
     def subject(self) -> str:
+        """The first half of :attr:`key`."""
         return self.key[0]
 
     @property
     def predicate(self) -> str:
+        """The second half of :attr:`key`."""
         return self.key[1]
 
     @property
     def changed_values(self) -> tuple[ValueChange, ...]:
+        """:attr:`values`, minus the ones that carried over unchanged."""
         return tuple(v for v in self.values if v.kind != ValueKind.UNCHANGED)
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize to the JSON-ready shape the CLI and API report."""
         return {
             "subject": self.subject,
             "predicate": self.predicate,
@@ -321,6 +333,7 @@ class DiffStat:
     facts_reaffirmed: int
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize to the JSON-ready shape the CLI and API report."""
         return {
             "keys_changed": self.keys_changed,
             "by_kind": {str(k): v for k, v in self.by_kind.items()},
@@ -346,15 +359,18 @@ class Diff:
 
     @property
     def is_empty(self) -> bool:
+        """True if no key differs between the two states."""
         return len(self.keys) == 0
 
     def by_kind(self) -> dict[ChangeKind, tuple[KeyDiff, ...]]:
+        """Group :attr:`keys` by their :class:`ChangeKind`."""
         result: dict[ChangeKind, list[KeyDiff]] = {}
         for kd in self.keys:
             result.setdefault(kd.kind, []).append(kd)
         return {kind: tuple(kds) for kind, kds in result.items()}
 
     def stat(self) -> DiffStat:
+        """Aggregate this diff into the counts ``--stat`` prints."""
         by_kind_counts: dict[ChangeKind, int] = {}
         facts_added = facts_removed = facts_reaffirmed = 0
         for kd in self.keys:
@@ -375,6 +391,7 @@ class Diff:
         )
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize to the JSON-ready shape the CLI and API report."""
         return {
             "type": "diff",
             "cardinality": self.cardinality.to_dict(),
@@ -535,8 +552,12 @@ def _violations(
     before_reps: dict[str, Fact] | None,
     after_reps: dict[str, Fact] | None,
 ) -> tuple[CardinalityViolation, ...]:
-    """Only meaningful for ``single``-declared keys, but checked unconditionally here;
-    the caller (``diff_trees``) only keeps these when the key is actually ``single``."""
+    """Check both sides of one key for more than one distinct object.
+
+    Only meaningful for ``single``-declared keys, but checked unconditionally
+    here; the caller (``diff_trees``) only keeps these when the key is
+    actually ``single``.
+    """
     violations: list[CardinalityViolation] = []
     if before_reps is not None and len(before_reps) > 1:
         violations.append(CardinalityViolation(key, "before", tuple(sorted(before_reps))))

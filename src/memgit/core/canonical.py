@@ -17,14 +17,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 __all__ = ["canonical_json", "hash_payload", "utcnow"]
 
 
 def canonical_json(payload: Any) -> bytes:
-    """Serialize ``payload`` to a byte string that is stable across runs.
+    r"""Serialize ``payload`` to a byte string that is stable across runs.
 
     So we pin down every degree of freedom:
 
@@ -57,4 +57,4 @@ def hash_payload(payload: Any) -> str:
 
 def utcnow() -> str:
     """Current UTC time as an ISO-8601 string with an explicit offset."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
