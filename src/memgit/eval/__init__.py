@@ -15,10 +15,16 @@ a demo. ``tests/test_eval_imports.py`` asserts this stays true.
 from __future__ import annotations
 
 from memgit.eval.case import EvalCase, EvalFormatError, EvalSuite, load_suites
+from memgit.eval.runner import CaseResult, CheckResult, SuiteResult, run_case, run_suite
 
 __all__ = [
     "EvalCase",
     "EvalSuite",
     "EvalFormatError",
     "load_suites",
+    "CheckResult",
+    "CaseResult",
+    "SuiteResult",
+    "run_case",
+    "run_suite",
 ]
