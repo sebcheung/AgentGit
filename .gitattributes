@@ -1,0 +1,6 @@
+# Shell scripts run inside Linux containers regardless of which OS checked
+# them out -- a CRLF-converted entrypoint.sh (core.autocrlf=true on a fresh
+# Windows clone, the default here) breaks its shebang line the moment
+# `docker build` copies it into the image. Force LF unconditionally rather
+# than relying on every contributor's local autocrlf setting.
+*.sh text eol=lf
