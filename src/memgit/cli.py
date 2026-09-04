@@ -25,6 +25,7 @@ from memgit.core.repository import (
     RevisionNotFoundError,
 )
 from memgit.core.store import CorruptObjectError, ObjectNotFoundError, hash_object
+from memgit.core.tree import EMPTY_TREE_HASH
 from memgit.retrieval.embed import embed_text
 
 app = typer.Typer(
@@ -765,6 +766,10 @@ def status_cmd() -> None:
         tree = repo.read_tree(head.commit)
         typer.echo(f"{len(tree)} key(s), {len(tree.fact_hashes())} fact(s)")
 
+    areas = repo.staging_areas()
+    if areas:
+        typer.echo(f"{len(areas)} open staging area(s) (see `memgit staging`)")
+
 
 @app.command("hash-object")
 def hash_object_cmd(
@@ -1155,6 +1160,77 @@ def decay_unset_cmd(
     """Remove PREDICATE's declaration, reverting it to the policy's default."""
     repo = _repo()
     repo.set_decay(repo.decay().without_half_life(predicate))
+
+
+staging_app = typer.Typer(help="Inspect and manage MCP write sessions' staging areas.")
+app.add_typer(staging_app, name="staging")
+
+
+@staging_app.callback(invoke_without_command=True)
+def staging_main(ctx: typer.Context) -> None:
+    """List every open staging area. Mirrors bare ``memgit staging``."""
+    if ctx.invoked_subcommand is not None:
+        return
+    areas = _repo().staging_areas()
+    if not areas:
+        typer.echo("(no open staging areas)")
+        return
+    for area in areas:
+        typer.echo(f"{area.key}\tbase={area.base[:8] if area.base else '(unborn)'}\ttree={area.tree[:8]}")
+
+
+@staging_app.command("show")
+def staging_show_cmd(key: str = typer.Argument(..., help="A staging area's key, from `memgit staging`.")) -> None:
+    """Print the fact set currently staged under KEY."""
+    repo = _repo()
+    area = repo.staging_area(key)
+    if area is None:
+        _fail(f"no staging area at {key!r}")
+        return
+    typer.echo(repo.state(area.tree).render())
+
+
+@staging_app.command("diff")
+def staging_diff_cmd(key: str = typer.Argument(..., help="A staging area's key, from `memgit staging`.")) -> None:
+    """Show what committing KEY's staged facts as-is would change, relative to its base."""
+    repo = _repo()
+    area = repo.staging_area(key)
+    if area is None:
+        _fail(f"no staging area at {key!r}")
+        return
+    before = area.base if area.base is not None else EMPTY_TREE_HASH
+    diff = repo.diff(before=before, after=area.tree)
+    _print_diff_human(diff, name_only=False)
+
+
+@staging_app.command("commit")
+def staging_commit_cmd(
+    key: str = typer.Argument(..., help="A staging area's key, from `memgit staging`."),
+    message: str = typer.Option(..., "-m", "--message", help="Commit message."),
+) -> None:
+    """Seal KEY's staged facts into a durable commit — the CLI's escape hatch
+    for a session an MCP client never sealed itself.
+    """
+    repo = _repo()
+    area = repo.staging_area(key)
+    if area is None:
+        _fail(f"no staging area at {key!r}")
+        return
+    commit_hash = repo.seal_staging_key(key, message, author="cli")
+    if commit_hash is None:
+        typer.secho("nothing to commit", fg=typer.colors.YELLOW, err=True)
+        return
+    typer.echo(commit_hash)
+
+
+@staging_app.command("drop")
+def staging_drop_cmd(key: str = typer.Argument(..., help="A staging area's key, from `memgit staging`.")) -> None:
+    """Discard KEY's staging area without committing."""
+    repo = _repo()
+    if repo.staging_area(key) is None:
+        _fail(f"no staging area at {key!r}")
+        return
+    repo.drop_staging(key)
 
 
 if __name__ == "__main__":
