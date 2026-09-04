@@ -332,6 +332,26 @@ class TestDecay:
         assert not (repo.memgit_dir / "decay.json").exists()
 
 
+class TestRetrieval:
+    def test_init_does_not_create_the_embeddings_dir(self, repo):
+        assert not repo.embeddings_dir.exists()
+
+    def test_embedder_defaults_to_hashing(self, repo):
+        embedder = repo.embedder()
+        assert embedder.id.startswith("hash-v1/")
+
+    def test_vector_index_is_scoped_to_the_embedder(self, repo):
+        index = repo.vector_index()
+        assert index.embedder_id == repo.embedder().id
+        assert index.dim == repo.embedder().dim
+
+    def test_vector_index_put_creates_the_embeddings_dir(self, repo):
+        embedder = repo.embedder()
+        index = repo.vector_index(embedder)
+        index.put("abc123", embedder.embed("hello"))
+        assert repo.embeddings_dir.is_dir()
+
+
 class TestDiff:
     def test_root_commit_diffs_against_the_empty_tree(self, repo):
         fact = make_fact()
