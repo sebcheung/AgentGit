@@ -21,6 +21,11 @@ web = [
     "fastapi>=0.141.1,<1",
     "uvicorn>=0.34",
 ]
+pg = [
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.2",
+    "alembic>=1.14",
+]
 
 [project.scripts]
 memgit = "memgit.cli:app"
@@ -43,9 +48,10 @@ module-root = "src"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q -m \"not live\""
+addopts = "-q -m \"not live and not postgres\""
 markers = [
     "live: hits the real Anthropic API; needs ANTHROPIC_API_KEY and `--all-extras`",
+    "postgres: needs a real Postgres server at $DATABASE_URL; needs `--all-extras`",
 ]
 
 [tool.ruff]
