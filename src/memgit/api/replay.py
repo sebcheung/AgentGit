@@ -14,12 +14,16 @@ never requires the ``agent`` extra merely to import.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from memgit.api.deps import get_llm_client, get_repo, replay_semaphore
 from memgit.api.models import ReplayOutcomeModel, ReplayRequest, ReplayResponse, RetrievalInfoModel
 from memgit.core.repository import Repository
+
+if TYPE_CHECKING:
+    from memgit.agent.client import LLMClient
 
 router = APIRouter()
 
@@ -38,7 +42,7 @@ def _parse_as_of(value: str) -> datetime:
 def replay(
     request: ReplayRequest,
     repo: Repository = Depends(get_repo),
-    client=Depends(get_llm_client),
+    client: LLMClient = Depends(get_llm_client),
 ) -> ReplayResponse:
     """Ablate ``(subject, predicate)`` at ``rev`` and replay ``query`` with and without it.
 
