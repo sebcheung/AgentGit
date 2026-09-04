@@ -14,18 +14,41 @@ between them.
 
 from __future__ import annotations
 
-from typing import Annotated
+from datetime import datetime, timezone
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from memgit import __version__
 from memgit.api.deps import get_repo
-from memgit.api.models import CommitNode, HeadModel, HealthResponse, LogResponse, RepoResponse
+from memgit.api.models import (
+    CommitDetail,
+    CommitNode,
+    DiffResponse,
+    HeadModel,
+    HealthResponse,
+    LogResponse,
+    RepoResponse,
+    StateResponse,
+)
 from memgit.core.commit import Commit
 from memgit.core.graph import walk
 from memgit.core.repository import Repository
 
 router = APIRouter()
+
+
+def _parse_as_of(value: str) -> datetime:
+    """Parse an ``as_of`` query param — a genuine client-input error, so
+    this raises locally (400) rather than through the global handlers,
+    matching the diff route's own local ``ValueError`` guard below."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"as_of must be ISO-8601, got {value!r}") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _commit_node(commit_hash: str, commit: Commit) -> CommitNode:
@@ -98,3 +121,84 @@ def get_log(
 
     commits = [_commit_node(h, c) for h, c in walk(starts, repo.read_commit, limit=limit)]
     return LogResponse(rev=rev, resolved=resolved, all=all_branches, commits=commits)
+
+
+@router.get("/commits/{rev:path}", response_model=CommitDetail)
+def get_commit(rev: str, repo: Repository = Depends(get_repo)) -> CommitDetail:
+    resolved = repo.resolve(rev)
+    commit = repo.read_commit(resolved)
+    stat = repo.diff(after=resolved).stat().to_dict()
+    node = _commit_node(resolved, commit)
+    return CommitDetail(**node.model_dump(), stat=stat)
+
+
+@router.get("/state", response_model=StateResponse)
+def get_state(
+    rev: Annotated[str, Query()] = "HEAD",
+    subject: Annotated[str | None, Query()] = None,
+    predicate: Annotated[str | None, Query()] = None,
+    min_confidence: Annotated[float, Query(ge=0.0, le=1.0)] = 0.0,
+    as_of: Annotated[str | None, Query()] = None,
+    repo: Repository = Depends(get_repo),
+) -> StateResponse:
+    """Mirrors ``cli.py``'s ``state --json`` exactly, including the
+    decay-as-display-lens behavior: ``as_of`` never touches stored
+    confidence, only adds a ``decayed_confidence`` field per fact.
+    """
+    resolved = repo.resolve(rev)
+    memory = repo.state(resolved)
+
+    if subject is not None or predicate is not None or min_confidence > 0.0:
+        memory = memory.filter(
+            min_confidence=min_confidence,
+            subjects={subject} if subject is not None else None,
+            predicates={predicate} if predicate is not None else None,
+        )
+
+    payload: dict[str, Any] = memory.to_dict()
+    as_of_dt = _parse_as_of(as_of) if as_of is not None else None
+    if as_of_dt is not None:
+        policy = repo.decay()
+        payload["as_of"] = as_of_dt.isoformat()
+        for fact_payload, fact in zip(payload["facts"], memory.facts):
+            fact_payload["decayed_confidence"] = policy.decayed(fact, as_of=as_of_dt)
+
+    return StateResponse(
+        rev=rev, resolved=resolved, as_of=as_of_dt.isoformat() if as_of_dt else None, state=payload
+    )
+
+
+@router.get("/diff", response_model=DiffResponse)
+def get_diff(
+    before: Annotated[str | None, Query()] = None,
+    after: Annotated[str, Query()] = "HEAD",
+    include_unchanged: Annotated[bool, Query()] = False,
+    use_merge_base: Annotated[bool, Query()] = False,
+    repo: Repository = Depends(get_repo),
+) -> DiffResponse:
+    """``Diff.to_dict()`` passed through unmodified — see ``models.py``'s
+    ``DiffResponse`` docstring for why. The one local ``ValueError`` guard
+    below is deliberately *not* a global handler: see ``errors.py``'s
+    module docstring for the argument.
+    """
+    try:
+        result = repo.diff(
+            before, after, include_unchanged=include_unchanged, use_merge_base=use_merge_base
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    resolved_after = repo.resolve(after)
+    # Mirrors cli.py's own diff --json, which echoes the raw `before` input
+    # (often None, for the implicit-first-parent default) rather than
+    # re-deriving what it resolved to.
+    resolved_before = repo.resolve(before) if before is not None else None
+
+    return DiffResponse(
+        before=before,
+        after=after,
+        resolved_before=resolved_before,
+        resolved_after=resolved_after,
+        use_merge_base=use_merge_base,
+        diff=result.to_dict(),
+    )
