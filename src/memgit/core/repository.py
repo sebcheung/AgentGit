@@ -68,6 +68,8 @@ from memgit.core.fact import Fact, FactKey
 from memgit.core.graph import merge_base, walk
 from memgit.core.reflog import RefLog, RefLogEntry, RefLogger, ReflogNotFoundError
 from memgit.core.refs import Head, RefStore
+from memgit.retrieval.embed import Embedder, default_embedder
+from memgit.retrieval.index import VectorIndex
 from memgit.core.revparse import AncestryError, RevSyntaxError, apply_steps, parse_revision
 from memgit.core.state import MemoryState
 from memgit.core.store import (
@@ -406,6 +408,32 @@ class Repository:
         lock = path.with_name(path.name + ".lock")
         lock.write_text(json.dumps(policy.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
         lock.replace(path)
+
+    # -- retrieval -------------------------------------------------------
+
+    @property
+    def embeddings_dir(self) -> Path:
+        """Where vector caches live, namespaced per embedder.
+
+        Not created by :meth:`init` — like the objects fanout directories,
+        it comes into existence lazily on the first vector written, so a
+        slice 0-6 repository that has never seen retrieval stays untouched.
+        """
+        return self.memgit_dir / "embeddings"
+
+    def embedder(self) -> Embedder:
+        """This repository's configured embedder — a zero-dependency default.
+
+        Reads the ``"retrieval"`` section of :meth:`config`; see
+        :func:`memgit.retrieval.embed.default_embedder` for the config
+        shape and error behavior.
+        """
+        return default_embedder(self.config().get("retrieval"))
+
+    def vector_index(self, embedder: Embedder | None = None) -> VectorIndex:
+        """This repository's vector cache for ``embedder`` (default: :meth:`embedder`)."""
+        resolved = embedder if embedder is not None else self.embedder()
+        return VectorIndex.open(self.embeddings_dir, embedder_id=resolved.id, dim=resolved.dim)
 
     # -- diff ------------------------------------------------------------
 

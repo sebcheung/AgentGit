@@ -446,6 +446,33 @@ class TestState:
         assert result.exit_code == 1
 
 
+class TestEmbed:
+    def test_embeds_every_fact_reachable_from_head(self, tmp_path):
+        _init_and_commit(tmp_path)
+        result = runner.invoke(app, ["embed", "--stats"])
+        assert result.exit_code == 0
+        assert "embedded 1 new fact(s), 0 already present" in result.output
+
+    def test_second_run_is_idempotent(self, tmp_path):
+        _init_and_commit(tmp_path)
+        runner.invoke(app, ["embed"])
+        result = runner.invoke(app, ["embed", "--stats"])
+        assert result.exit_code == 0
+        assert "embedded 0 new fact(s), 1 already present" in result.output
+
+    def test_rebuild_reembeds_everything(self, tmp_path):
+        _init_and_commit(tmp_path)
+        runner.invoke(app, ["embed"])
+        result = runner.invoke(app, ["embed", "--rebuild", "--stats"])
+        assert result.exit_code == 0
+        assert "embedded 1 new fact(s), 0 already present" in result.output
+
+    def test_unknown_revision_fails(self, tmp_path):
+        _init_and_commit(tmp_path)
+        result = runner.invoke(app, ["embed", "does-not-exist"])
+        assert result.exit_code == 1
+
+
 class TestCardinality:
     def test_lists_default_with_no_declarations(self, tmp_path):
         runner.invoke(app, ["init"])
