@@ -1233,5 +1233,30 @@ def staging_drop_cmd(key: str = typer.Argument(..., help="A staging area's key, 
     repo.drop_staging(key)
 
 
+@app.command("serve")
+def serve_cmd(
+    transport: str = typer.Option("stdio", "--transport", help="'stdio' or 'streamable-http'."),
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address for --transport streamable-http."),
+    port: int = typer.Option(8000, "--port", help="Bind port for --transport streamable-http."),
+) -> None:
+    """Run an MCP server over this repository (slice 8).
+
+    Exposes remember/forget/commit/recall/read_state/diff/log/create_branch
+    as MCP tools. Writes are staged per MCP session and only become durable
+    when the client calls the `commit` tool — see `src/memgit/mcp/server.py`
+    for the full write-path argument. Requires the `mcp` extra
+    (``pip install memgit[mcp]``).
+    """
+    if transport not in ("stdio", "streamable-http"):
+        _fail(f"--transport must be 'stdio' or 'streamable-http', got {transport!r}")
+        return
+    try:
+        from memgit.mcp.server import run as run_mcp_server
+    except ImportError:
+        _fail("the 'mcp' extra is required: pip install memgit[mcp] (or `uv sync --extra mcp`)")
+        return
+    run_mcp_server(_repo(), transport=transport, host=host, port=port)
+
+
 if __name__ == "__main__":
     app()
