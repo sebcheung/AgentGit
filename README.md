@@ -228,9 +228,9 @@ Claude Desktop, or a live Claude conversation over a tunnel — as
   HEAD is the human's cursor at the CLI, not a session's.
 
 ```sh
-py -m uv sync --extra mcp --system-certs
-py -m uv run memgit serve                              # stdio, for Claude Desktop
-py -m uv run memgit serve --transport streamable-http   # a real HTTP server
+py -3 -m uv sync --extra mcp --system-certs
+py -3 -m uv run memgit serve                              # stdio, for Claude Desktop
+py -3 -m uv run memgit serve --transport streamable-http   # a real HTTP server
 ```
 
 For Claude Desktop, add to its config:
@@ -251,10 +251,11 @@ nothing is lost: `memgit staging` lists every open staging area,
 `memgit staging show <key>` / `diff <key>` inspect it, and
 `memgit staging commit <key> -m "..."` seals it from the CLI.
 
-**No auth in this slice.** `memgit serve` binds to loopback by default;
-tunneling it (`ngrok`, `cloudflared`) for a live demo means unauthenticated
-write access to memory for as long as the tunnel is open — close it when
-the demo ends. See PLAN.md's "Honest caveats."
+`memgit serve --transport streamable-http` requires an API key
+(`--api-key`, or `$MEMGIT_API_KEY`) the moment `--host` isn't loopback —
+see [Auth](#auth) below. stdio is exempt: the host process already owns
+the pipe it runs over, so a key there would check nothing a malicious
+host couldn't already do directly.
 
 ## CI for agent memory
 
@@ -323,23 +324,94 @@ The API underneath is exactly what the CLI already computes —
 `memgit diff --json` / `memgit state --json`. `/docs` gets you the full
 OpenAPI schema for free.
 
-**Read-only, plus replay — no auth in this slice.** Every route but one is
-a `GET`; `POST /api/replay` is the exception, and it's the one call in
-this project that structurally cannot write memory (`ablate_and_replay`
-never calls `Repository.commit`). Requires the `web` extra
-(`pip install memgit[web]`, or `uv sync --extra web`). Same posture as the
-MCP server's own caveat above: binds to loopback by default, and an
-unauthenticated replay button is a paid button — see PLAN.md's "Honest
-caveats" for both gaps stated plainly, closed together in slice 11.
+**Read-only, plus replay.** Every route but one is a `GET`; `POST
+/api/replay` is the exception, and it's the one call in this project that
+structurally cannot write memory (`ablate_and_replay` never calls
+`Repository.commit`). Requires the `web` extra (`pip install memgit[web]`,
+or `uv sync --extra web`). `memgit serve-web` requires an API key the
+moment `--host` isn't loopback, same as `memgit serve` above — every route
+but `/api/health` and `/api/ready` enforces it; see [Auth](#auth).
+
+## Auth
+
+Off by default on loopback — every route above works exactly as shown,
+unauthenticated, the moment you run `memgit serve`/`serve-web` with no
+`--api-key`. The moment `--host` isn't loopback, both commands refuse to
+bind without one:
+
+```sh
+$ memgit serve-web --host 0.0.0.0
+refusing to bind '0.0.0.0' with no API key configured -- set --api-key,
+$MEMGIT_API_KEY, or pass --insecure to bind anyway
+$ memgit serve-web --host 0.0.0.0 --api-key "$(py -3 -m uv run python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+memgit dashboard: http://0.0.0.0:8001
+```
+
+Present the key as `X-API-Key: <key>` or `Authorization: Bearer <key>`; the
+dashboard's own JS prompts for it once, on the first 401, and remembers it
+for the tab (`sessionStorage`, never a cookie or a URL). `--insecure`
+overrides the refusal with a loud warning — the explicit escape hatch for a
+tunneled demo (`ngrok`/`cloudflared`), not a way to silence the warning.
+
+This is a single shared key, not per-caller identity: every request that
+presents it looks the same to the server, so there's no rotation and no
+revocation list. That's the honest, minimal answer for a debugging tool one
+person tunnels to themselves — see PLAN.md's "Honest caveats" for the full
+statement of what this does and doesn't buy you.
+
+## Blame and storage stats
+
+Everything above reads the filesystem object store directly. A separate,
+optional Postgres projection (`memgit.pg`, the `pg` extra) mirrors the
+commit graph into relational tables for the one question the CAS answers
+slowly — "which commits touched this key, and what did each one do to it":
+
+```sh
+$ export DATABASE_URL=postgresql+psycopg://memgit:...@localhost/memgit
+$ memgit project
+12 commit(s), 41 fact(s) added
+$ memgit blame user favorite_editor
+2026-01-03T09:00:00+00:00  a1b2c3d4  +5f9ee29a
+2026-01-15T14:22:00+00:00  8d258c6e  -5f9ee29a
+2026-01-15T14:22:00+00:00  8d258c6e  +6a225e44
+$ memgit stats
+41 distinct fact(s), 63 tree entries
+dedup ratio: 1.54x
+```
+
+The projection is derived, never authoritative: `memgit.core` never
+imports `memgit.pg`, and every command above still works with no database
+configured at all. `memgit project` is idempotent — safe to re-run after
+every commit, or on a schedule — and every query it answers is checked
+against a full walk of the object store in `tests/test_pg_queries.py`. See
+PLAN.md's "Decisions locked in" for why Postgres is a projection rather
+than a second source of truth.
+
+## Running it
+
+```sh
+cp .env.example .env   # set POSTGRES_PASSWORD and MEMGIT_API_KEY
+docker compose up -d --build
+curl http://localhost:8001/api/ready
+```
+
+One command, fully local, `$0`: `db` (Postgres), `migrate` (`alembic
+upgrade head`, once), `init` (`memgit init` on a shared volume, once), then
+`api` (the dashboard, port 8001) and `mcp` (streamable HTTP, port 8000).
+Both `api` and `mcp` bind `0.0.0.0` inside the compose network, which is
+exactly the case [Auth](#auth) requires a key for — `docker-compose.yml`
+refuses to start either service without `MEMGIT_API_KEY` set. See
+[docs/LOADTEST.md](docs/LOADTEST.md) for what this stack's read endpoints
+look like under load.
 
 ## Quickstart
 
 ```sh
-py -m uv sync --all-extras --system-certs
-py -m uv run memgit init
-py -m uv run memgit commit -m "seed" --file facts.json
-py -m uv run memgit log --oneline
-py -m uv run memgit show HEAD
+py -3 -m uv sync --all-extras --system-certs
+py -3 -m uv run memgit init
+py -3 -m uv run memgit commit -m "seed" --file facts.json
+py -3 -m uv run memgit log --oneline
+py -3 -m uv run memgit show HEAD
 ```
 
 See [PLAN.md](PLAN.md) for setup details, the full CLI surface, and what's

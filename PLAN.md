@@ -128,7 +128,8 @@ increment, tested before moving on:
 | 8. MCP server | 10 (moved up — the tool-call fact-write decision makes this nearly the same code as slice 4) | ✅ |
 | 9. Eval suite | 11 | ✅ |
 | 10. FastAPI + dashboard | 12 | ✅ |
-| 11. Production hardening + packaging | 13 + 14 (merged) | |
+| 11a. Production hardening | 13 (lint/types/logging/retries/auth/readiness) | ✅ |
+| 11b. Data + packaging | 13 + 14 (Postgres projection, Docker Compose, CI, load test) | ✅ |
 
 Checkout/rewind is deliberately its own slice (4), after the diff engine (3) rather
 than bundled into the commit graph (2): materializing a past state is easiest to get
@@ -204,14 +205,28 @@ Design choices already made and built on, not up for re-litigation without a rea
 | Replay's model and rate | The model is a server-side `serve-web --model`, never a request field, and one replay may be in flight per process (429 otherwise) | The endpoint is unauthenticated for this slice, so a request-chosen model is a request-chosen bill, and a button in a browser is trivially spammable during exactly the live demo this dashboard exists for. Both limits disappear naturally once slice 11's API-key auth gives requests an identity to bill and throttle against. |
 | `/health` | A trivial `GET /api/health` (`{"status": "ok", "version": …}`) lands in this slice; the health-check row above stays slice 11's | The endpoint and the row are two different deliverables. The row's own "why" is about the *check* — "exercised by Docker's own `HEALTHCHECK` and by CI" — and neither Docker Compose nor a container build exists until slice 11, so the row cannot be closed here. The three-line endpoint, though, belongs to whoever owns the ASGI app: it costs nothing, it gives `serve-web` a smoke test that touches no repository state, and deferring it would mean slice 11 reopening `api/` to add a route it didn't write. This version deliberately reports *only* liveness — no repository probe, no dependency check — leaving slice 11 free to extend it into a real readiness check without contradicting anything shipped here. |
 | Dashboard command name | `memgit serve-web`, port 8001 | `memgit serve` is already the MCP server in shipped tests and docs, so renaming it to `serve-mcp` for symmetry would break surface for cosmetics; keeping the `serve` prefix clusters the two long-running servers and makes the split legible (one for agents, one for humans). Port 8001 because `memgit serve --transport streamable-http` already defaults to 8000 and a live demo plausibly runs both at once. One name, no alias — the same instinct that keeps a second way to say `remember` out of the tool surface. |
+| Postgres as a derived projection, not the source of truth | `memgit.pg` mirrors the commit graph, facts, and tree entries into Postgres via `memgit project`; the filesystem CAS stays canonical and `memgit.core` never imports `memgit.pg` | A commit's identity is the SHA-256 of its own canonical JSON — a table holding that same JSON is a second copy that can disagree with its own hash the moment either drifts. Postgres earns its place on the one query class the CAS can't answer cheaply — "which commits touched this key, and what did each one do to it" (`memgit blame`) — not on storage. Confirmed by a test that checks *every* query in `memgit.pg.queries` against a full CAS walk of the same repository. |
+| `key_deltas` stores value-level ops, not a `ChangeKind` | The projection's `key_deltas` table records raw `(+fact_hash)`/`(-fact_hash)` evidence per commit, never the eight-way `ChangeKind` label `memgit diff` prints | `ChangeKind` is a function of the *uncommitted*, repo-local cardinality map (see that row above); materializing one into a table would freeze one reading of a question the cardinality row already says has no stored answer. `memgit blame` applies the *current* map to this raw evidence at read time, exactly as `memgit diff` does. |
+| Eval-results storage, revisited | Still not stored — `memgit project` mirrors commits, facts, and tree entries, never eval results | Reaffirms the eval-suite-storage row above against the temptation to fill Postgres out now that it exists: a result is still a pure function of `(suite, repo, rev)`, so persisting one still stores an answer the store can already re-answer. |
+| Projection freshness | `memgit project` is invoked by hand (or an operator's own cron/CI step) — never from a `Repository.commit` write hook | A write hook would put a database in the path of `memgit.core`'s offline-by-construction commit path, the one invariant this whole layer exists to not touch. A stale projection is a slow answer (the caller should re-run `memgit project`), never a wrong one, since every query is validated against the CAS in its own tests — the honest cost of a read-model that is genuinely optional. |
+| API-key auth, default-off on loopback, mandatory off it | `create_app`/`build_server` both accept `api_key: str \| None`; `serve-web`/`serve --transport streamable-http` resolve `--api-key` → `$MEMGIT_API_KEY` → refuse to bind a non-loopback host without one (`--insecure` overrides, loudly) | Unauthenticated is allowed only when the server cannot be reached from outside the machine it runs on. The dependency (`deps.require_api_key`) is a no-op when no key is configured, so the 829 tests that existed before this slice keep exercising the exact path they always did — one dependency, one branch, not two code paths where only one is tested. |
+| The key primitive lives in `memgit.keyauth`, not `memgit.api` | `resolve_key`/`extract_presented`/`check`/`is_loopback`/`generate_key` are stdlib-only (`hmac`, `os`, `secrets`) | `mcp/server.py` needs the identical check without requiring the `web` extra — putting it under `api/` would make the MCP server import FastAPI merely to read a header. |
+| stdio MCP is exempt from the key entirely | `memgit serve`'s stdio transport never requires (and warns if given) `--api-key`; only `--transport streamable-http` enforces it | The host process already owns the pipe a stdio server runs over — a key on a transport the host already controls end-to-end is theater, not a real access boundary. |
+| Replay's semaphore survives auth | `deps.replay_semaphore` (at most one replay in flight per process) stays after this slice, contrary to what the "Replay's model and rate" row above predicted | A single shared `MEMGIT_API_KEY` gives every request the same identity, not a distinct one per caller — so there is still nothing to throttle *per caller*, only per process. Recorded here as an honest correction of a prior row rather than silently dropping the limit it predicted would disappear. |
+| Liveness and readiness are two endpoints | `/api/health` (unchanged, liveness only) and a new `/api/ready`, both exempt from the API-key dependency, live in their own router (`api/health.py`) rather than as routes inside `read.py` | They drive two different orchestrator actions: a liveness failure means *restart*, a readiness failure means *depool*. Conflating them would restart a perfectly healthy process over one slow dependency check. Both stay unauthenticated because Docker's own `HEALTHCHECK` has no key to send, and a probe that 401s reads as "down" to whatever is polling it. |
+| Retries delegated to the SDK | `AnthropicClient` gains `max_retries`/`timeout`, passed straight to `anthropic.Anthropic(...)`; `create_message` still makes exactly one call and adds logging, not a second retry loop | The SDK already retries 408/409/429/5xx and connection errors with exponential backoff and honors `retry-after`. A loop wrapped around that would multiply attempts (N × M instead of N + M) and ignore `retry-after` entirely, turning one 429 into a small self-inflicted DDoS. |
+| Structured logging: hand-rolled JSON, entry points only | `memgit.logging_config.JsonFormatter` (stdlib `logging` + `json.dumps`, no dependency); only `cli.py`'s `main()` callback and the two `serve`/`serve-web` commands ever call `configure_logging` | `structlog` is a dependency for what `json.dumps` over a filtered `record.__dict__` already does, in a repo whose only runtime dependency was `typer`. A library that touches the root logger on import hijacks whatever logging configuration its host application already has — every other module just does `logging.getLogger(__name__)` and logs. |
+| `ruff format` deliberately not adopted | Lint (`ruff check`) is in CI; the formatter is not | Reformatting ~9,500 existing lines destroys `git blame` across the entire project immediately before it becomes a portfolio artifact, for zero behavior change. Revisit at a natural break, not mid-slice. |
+| mypy covers `src/`, never `tests/` | `[tool.mypy]`'s `files = ["src/memgit"]` excludes `tests/` entirely, not just via a lenient override | The slice-9 row above feared "~8,000 unannotated lines" would swamp a first type-check pass; measured, `src/memgit` was already ~100% return-annotated, and the unannotated bulk was actually 829 test functions whose value is their assertion, not their signature. Annotating them would be the single largest diff in the project's history in exchange for catching approximately nothing — a documented ratchet, not a pretense that the number was smaller than feared. |
+| Load test excludes `/api/replay` | `scripts/loadtest.py` hits `/api/log`, `/api/state`, `/api/diff`, `/api/recall`; never `/api/replay` | Two paid Anthropic API calls per request means a load test that hits it is a bill, not a benchmark. |
 
 ---
 
 ## Metrics worth tracking (for your README and interview talking points)
 
 - % of behavior changes correctly attributed to a specific memory diff (your causal attribution accuracy)
-- Storage efficiency from deduplication (bytes saved vs. naive full-copy snapshotting)
-- Diff computation time as memory size scales
+- Storage efficiency from deduplication (bytes saved vs. naive full-copy snapshotting) — measured: `memgit stats` (`memgit.pg.queries.dedup_stats`), reused fact objects vs. total tree entries across every projected commit
+- Diff computation time as memory size scales — measured: `docs/LOADTEST.md`'s `/api/state`/`/api/diff` numbers at 200/1,000/5,000 facts
 - A concrete before/after case study: "Agent gave wrong answer X, we branched memory, removed fact Y, replayed, answer changed to correct — here's the diff"
 
 ---
@@ -254,8 +269,8 @@ To keep this a focused, finishable summer project rather than an open-ended syst
 - Under retrieval, ablation has a second, distinct confound on top of the one above: the baseline's retrieved set is ranked *with* the ablated fact present, so it may have displaced some other fact from the top-k. The ablated run reuses that same pinned set minus the ablated fact rather than re-retrieving (see "Decisions locked in"), which holds the stimulus constant but means the ablated run may see a slightly smaller, differently-composed context than a live turn would — a changed reply is evidence about the ablated fact specifically, not about what a from-scratch retrieval against the ablated state would have surfaced.
 - The default embedder is lexical (hashed word and character-n-gram features), not semantic — it will not recognize that "favourite editor" and "preferred text editor" are the same claim. It is honest about being a zero-dependency baseline behind a seam, not a stand-in for a real sentence-embedding model.
 - This is a debugging/observability tool, not a production memory system for a live product — scope it as such rather than overclaiming.
-- The MCP server has no auth in this slice (PLAN.md defers that to slice 11's API-key work) — it binds to loopback by default, and the tunneled-demo path (`ngrok`/`cloudflared`) is unauthenticated write access to memory for as long as the tunnel is up. Be upfront that this is a deliberately deferred gap, not an oversight, and close the tunnel the moment the demo ends.
-- The dashboard and REST API (slice 10) have the same gap for the same reason: no auth until slice 11, bound to loopback by default. Everything it exposes is read-only except `POST /api/replay`, which cannot write memory but *can* spend money — two paid model calls behind a button, unauthenticated, for as long as the process runs. Close the tunnel the moment a live demo ends, exactly as the MCP caveat above already advises; slice 11 closes both gaps in one pass.
+- Slice 11 closed the loopback-auth gap the two paragraphs below used to describe, but not perfectly: both the MCP server and the REST API now require a key off loopback, presented as `X-API-Key` or `Authorization: Bearer`, checked in constant time. What's still missing is per-caller identity — a single shared `$MEMGIT_API_KEY` means every request looks the same to the server, so there is no rotation, no revocation list, and no way to tell two callers apart for rate-limiting or auditing. That is the correct, minimal answer for a single-user debugging tool talking to itself over a tunnel, not a mistake to paper over — say so out loud rather than let it be found. The tunneled-demo posture from before still applies: close the tunnel the moment a live demo ends, key or no key.
+- The Postgres projection (`memgit.pg`) can go stale between `memgit project` runs, and nothing keeps it in sync automatically. This is deliberate, not an oversight: a write hook in `Repository.commit` would put a database in the path of `memgit.core`'s offline-by-construction write path, which is the one invariant this whole layer exists to preserve. The honest cost is that `memgit blame`/`memgit stats` can lag reality until someone re-runs `memgit project` — a slow-to-notice answer, never a wrong one, since every query is checked against the filesystem CAS in its own tests.
 - The eval suite (slice 9) asserts over *memory*, never over agent behavior. A green suite means no belief regressed — it does not mean the agent still answers correctly. That stronger claim needs a non-deterministic, paid check, which is deliberately out of scope; see "Scope discipline" above.
 - `memgit eval --since`'s sweep reports the first failing commit along the walked ancestry, not a proof of unique cause — the same "evidence, not proof" posture the replay engine already takes for ablation, and it inherits `walk`'s existing clock-skew caveat.
 
@@ -272,16 +287,24 @@ To keep this a focused, finishable summer project rather than an open-ended syst
 
 ## Development environment
 
-- No `python` on PATH — use the `py` launcher, or `py -m uv run ...`.
-- `uv` is installed as a pip package, so it's `py -m uv`, not bare `uv`.
+- No `python` on PATH — use the `py` launcher, or `py -3 -m uv run ...`.
+- `uv` is installed as a pip package on the system Python, not the project's
+  own `.venv` — bare `py` resolves to whichever venv is currently active and
+  fails with `No module named uv`. `py -3` resolves to the system install
+  where `uv` actually lives; use that, not bare `py`, for every `uv` command.
+- `uv` is installed as a pip package, so it's `py -3 -m uv`, not bare `uv`.
 - **The network does TLS interception.** Every `uv` command that touches the
   index needs `--system-certs` or it fails with `invalid peer certificate:
-  UnknownIssuer`. e.g. `py -m uv sync --all-extras --system-certs`.
+  UnknownIssuer`. e.g. `py -3 -m uv sync --all-extras --system-certs`.
 
 ## Commands
 
 ```sh
-py -m uv sync --all-extras --system-certs   # install/refresh deps
-py -m uv run pytest                          # test
-py -m uv run memgit --help                   # CLI
+py -3 -m uv sync --all-extras --system-certs   # install/refresh deps
+py -3 -m uv run pytest                          # test (excludes live + postgres)
+py -3 -m uv run pytest -m postgres              # needs $DATABASE_URL, a real server
+py -3 -m uv run memgit --help                   # CLI
+
+docker compose up -d --build                    # the whole stack: db, migrate, api, mcp
+py -3 -m uv run python scripts/loadtest.py --synthesize 5000   # see docs/LOADTEST.md
 ```
