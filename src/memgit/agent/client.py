@@ -83,7 +83,12 @@ class AnthropicClient:
             import anthropic
 
             client = anthropic.Anthropic()
-        self._client = client
+        # Typed `Any`, not the SDK's `Anthropic`: narrowing it further would
+        # make mypy check `create_message`'s call below against the SDK's
+        # own precise overloads, defeating the whole point of the flattened
+        # dict-shaped `LLMClient` Protocol this class exists to satisfy (see
+        # the module docstring).
+        self._client: Any = client
         self._model = model
         self._max_tokens = max_tokens
 

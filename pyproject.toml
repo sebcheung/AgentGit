@@ -110,5 +110,15 @@ module = ["memgit.eval.*", "memgit.replay.*", "memgit.api.*"]
 ignore_errors = false
 
 [[tool.mypy.overrides]]
+module = ["memgit.agent.*", "memgit.mcp.*"]
+ignore_errors = false
+# Both packages wrap a third-party SDK (anthropic, mcp) with no bundled
+# type stubs at the versions pinned here, and the MCP SDK's `@mcp.tool()`
+# decorator erases the wrapped function's signature in a way mypy reports
+# as `misc` regardless of how the tool function itself is annotated.
+disallow_untyped_calls = false
+disable_error_code = ["misc"]
+
+[[tool.mypy.overrides]]
 module = ["mcp.*", "anthropic.*", "uvicorn.*"]
 ignore_missing_imports = true
