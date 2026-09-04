@@ -501,6 +501,56 @@ class Repository:
 
     # -- writing -------------------------------------------------------
 
+    def write_tree(self, facts: Iterable[Fact]) -> str:
+        """Write every fact in ``facts``, then the ``Tree`` they build; return its hash.
+
+        The object-writing half of :meth:`commit`, pulled out on its own so a
+        caller can produce a real, hashed, diffable tree without also
+        producing a ``Commit`` — which is exactly what MCP write staging
+        needs (see ``core/staging.py``): a session's in-progress memory state
+        has to live *somewhere* between two process invocations, and "a
+        content-addressed tree, referenced by a ref that isn't
+        ``refs/heads/*``" is the answer the no-index decision in PLAN.md
+        already points at, rather than any new, unhashed, git-index-shaped
+        state. Facts are written before the tree, matching the module
+        docstring's "objects before the ref moves" ordering one level down:
+        a crash here leaves unreferenced fact objects, not a tree pointing at
+        one that was never written.
+        """
+        fact_list = list(facts)
+        for fact in fact_list:
+            self.store.put(fact.to_dict())
+        new_tree = Tree.from_facts(fact_list)
+        return new_tree.write(self.store)
+
+    def overlay(
+        self, onto_tree: Tree, from_tree: Tree, keys: Sequence[FactKey]
+    ) -> list[Fact]:
+        """Apply just ``keys`` from ``from_tree`` onto ``onto_tree``; return the facts.
+
+        For each key: present in ``from_tree`` means "set to that value"
+        (:meth:`~memgit.core.tree.Tree.with_key`); absent means "remove it"
+        (:meth:`~memgit.core.tree.Tree.without_key`). A key not listed in
+        ``keys`` is left exactly as ``onto_tree`` has it, whether or not
+        ``from_tree`` also has an opinion about it — "put back just this one
+        belief" (or, for MCP sealing, "apply just the beliefs this session
+        actually touched"), never a wholesale replacement.
+
+        Extracted from :meth:`rewind`'s own ``keys=`` branch, which was
+        first to need exactly this operation; sealing a staged MCP session
+        onto a branch tip that has moved since staging began is the second
+        caller (see ``mcp/session.py``), and the reason this earned a name of
+        its own instead of staying inlined in one method.
+        """
+        by_key = from_tree.by_key()
+        merged_tree = onto_tree
+        for key in keys:
+            if key in by_key:
+                merged_tree = merged_tree.with_key(key, by_key[key])
+            else:
+                merged_tree = merged_tree.without_key(key)
+        return merged_tree.load(self.store)
+
     def commit(
         self,
         facts: Iterable[Fact],
@@ -510,6 +560,7 @@ class Repository:
         parents: Sequence[str] | None = None,
         metadata: Mapping[str, Any] | None = None,
         allow_empty: bool = False,
+        onto: str | None = None,
     ) -> str:
         """Write ``facts`` as a new commit; return its hash.
 
@@ -519,26 +570,32 @@ class Repository:
 
         Args:
             facts: The complete memory state for this commit, not a delta.
-            parents: Explicit parent hashes. ``None`` means "whatever HEAD
-                currently resolves to" (or no parent, on an unborn branch).
+            parents: Explicit parent hashes. ``None`` means "whatever
+                ``onto`` (or HEAD) currently resolves to" (or no parent, on
+                an unborn branch).
             allow_empty: Permit a commit whose tree is identical to its sole
                 parent's. Off by default, matching git.
+            onto: Advance this branch ref (``"refs/heads/<name>"`` or a bare
+                branch name) instead of HEAD's current branch, and leave HEAD
+                itself untouched. ``None`` (the default) reproduces every
+                prior slice's behavior exactly. This is what lets an MCP
+                write target a fixed, configured branch rather than
+                whatever the human's HEAD happens to point at in another
+                terminal — HEAD is the human's cursor, not a session's.
 
         Raises:
             EmptyCommitError: the tree would be identical to the sole
                 parent's tree, and ``allow_empty`` is not set.
         """
+        onto_ref = None if onto is None else (onto if onto.startswith("refs/") else f"refs/heads/{onto}")
+
         if parents is None:
-            current = self.head_commit()
+            current = self.refs.read_ref(onto_ref) if onto_ref is not None else self.head_commit()
             parent_hashes: tuple[str, ...] = (current,) if current else ()
         else:
             parent_hashes = tuple(parents)
 
-        fact_list = list(facts)
-        for fact in fact_list:
-            self.store.put(fact.to_dict())
-        new_tree = Tree.from_facts(fact_list)
-        new_tree_hash = new_tree.write(self.store)
+        new_tree_hash = self.write_tree(facts)
 
         if not allow_empty and len(parent_hashes) == 1:
             parent_commit = Commit.read(self.store, parent_hashes[0])
@@ -555,6 +612,13 @@ class Repository:
             metadata=metadata,
         )
         new_hash = new_commit.write(self.store)
+
+        if onto_ref is not None:
+            self.refs.write_ref(
+                onto_ref, new_hash, expect=parent_hashes[0] if parent_hashes else None,
+                op="commit", reason=new_commit.summary,
+            )
+            return new_hash
 
         head = self.head()
         if head.is_detached:
@@ -682,14 +746,7 @@ class Repository:
             facts = target_tree.load(self.store)
         else:
             current_tree = self.read_tree("HEAD") if self.head_commit() is not None else Tree(())
-            by_key = target_tree.by_key()
-            merged_tree = current_tree
-            for key in keys:
-                if key in by_key:
-                    merged_tree = merged_tree.with_key(key, by_key[key])
-                else:
-                    merged_tree = merged_tree.without_key(key)
-            facts = merged_tree.load(self.store)
+            facts = self.overlay(current_tree, target_tree, keys)
 
         if message is None:
             message = f"rewind memory to {revision} ({target_hash[:8]})"

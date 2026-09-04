@@ -505,6 +505,88 @@ class TestRewind:
         assert repo.read_commit(rewound).tree == repo.read_commit(first).tree
 
 
+class TestWriteTree:
+    def test_write_tree_matches_tree_from_facts_hash(self, repo):
+        facts = [make_fact(), make_fact(predicate="timezone", object="UTC")]
+        tree_hash = repo.write_tree(facts)
+        from memgit.core.tree import Tree
+
+        assert tree_hash == Tree.from_facts(facts).hash
+
+    def test_write_tree_stores_every_fact_object(self, repo):
+        fact = make_fact()
+        tree_hash = repo.write_tree([fact])
+        assert repo.store.contains(fact.hash)
+        assert repo.store.contains(tree_hash)
+
+    def test_write_tree_does_not_write_a_commit_or_move_any_ref(self, repo):
+        repo.write_tree([make_fact()])
+        assert repo.head_commit() is None
+
+
+class TestOverlay:
+    def test_overlay_sets_a_key_present_in_the_source(self, repo):
+        onto = repo.read_tree(repo.commit([make_fact(object="Python")], "seed"))
+        source = repo.read_tree(
+            repo.commit([make_fact(object="Rust")], "update")
+        )
+        facts = repo.overlay(onto, source, [("user", "prefers_language")])
+        assert [f.object for f in facts] == ["Rust"]
+
+    def test_overlay_removes_a_key_absent_from_the_source(self, repo):
+        onto = repo.read_tree(
+            repo.commit(
+                [make_fact(predicate="prefers_language"), make_fact(predicate="timezone", object="UTC")],
+                "seed",
+            )
+        )
+        empty_source = repo.read_tree(EMPTY_TREE_HASH)
+        facts = repo.overlay(onto, empty_source, [("user", "timezone")])
+        assert [f.predicate for f in facts] == ["prefers_language"]
+
+    def test_overlay_leaves_unlisted_keys_untouched(self, repo):
+        onto = repo.read_tree(
+            repo.commit(
+                [make_fact(predicate="prefers_language", object="Python"), make_fact(predicate="timezone", object="UTC")],
+                "seed",
+            )
+        )
+        source = repo.read_tree(EMPTY_TREE_HASH)
+        facts = repo.overlay(onto, source, [("user", "prefers_language")])
+        # "prefers_language" was overlaid from an empty source (removed);
+        # "timezone" was never listed, so it must survive untouched.
+        assert [f.predicate for f in facts] == ["timezone"]
+
+
+class TestCommitOnto:
+    def test_onto_advances_the_named_branch_and_leaves_head_alone(self, repo):
+        repo.commit([make_fact()], "seed")
+        repo.create_branch("other")
+        head_before = repo.head_commit()
+
+        new_hash = repo.commit([make_fact(object="Rust")], "update", onto="other")
+
+        assert repo.branches()["other"] == new_hash
+        assert repo.head_commit() == head_before
+
+    def test_onto_accepts_a_full_ref_path(self, repo):
+        repo.commit([make_fact()], "seed")
+        repo.create_branch("other")
+        new_hash = repo.commit([make_fact(object="Rust")], "update", onto="refs/heads/other")
+        assert repo.branches()["other"] == new_hash
+
+    def test_onto_an_unborn_branch_creates_a_root_commit(self, repo):
+        new_hash = repo.commit([make_fact()], "seed", onto="feature")
+        assert repo.branches()["feature"] == new_hash
+        assert repo.read_commit(new_hash).is_root
+
+    def test_onto_still_respects_empty_commit_detection(self, repo):
+        repo.commit([make_fact()], "seed")
+        repo.create_branch("other")
+        with pytest.raises(EmptyCommitError):
+            repo.commit([make_fact()], "no-op", onto="other")
+
+
 class TestReset:
     def test_reset_moves_the_current_branch(self, repo):
         first = repo.commit([make_fact()], "seed")
