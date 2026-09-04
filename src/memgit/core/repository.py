@@ -70,6 +70,7 @@ from memgit.core.reflog import RefLog, RefLogEntry, RefLogger, ReflogNotFoundErr
 from memgit.core.refs import Head, RefStore
 from memgit.retrieval.embed import Embedder, default_embedder
 from memgit.retrieval.index import VectorIndex
+from memgit.retrieval.rank import Retriever
 from memgit.core.revparse import AncestryError, RevSyntaxError, apply_steps, parse_revision
 from memgit.core.state import MemoryState
 from memgit.core.store import (
@@ -434,6 +435,20 @@ class Repository:
         """This repository's vector cache for ``embedder`` (default: :meth:`embedder`)."""
         resolved = embedder if embedder is not None else self.embedder()
         return VectorIndex.open(self.embeddings_dir, embedder_id=resolved.id, dim=resolved.dim)
+
+    def retriever(self, *, confidence_weight: float | None = None) -> Retriever:
+        """Assembles this repository's embedder, vector cache, and decay policy.
+
+        The caller still supplies the :class:`~memgit.core.state.MemoryState`
+        to :meth:`~memgit.retrieval.rank.Retriever.retrieve` — this factory
+        only wires up the repo-local configuration, never the candidate set,
+        which is exactly what keeps commit/branch scoping a property of the
+        call site rather than of this method.
+        """
+        embedder = self.embedder()
+        index = self.vector_index(embedder)
+        kwargs = {} if confidence_weight is None else {"confidence_weight": confidence_weight}
+        return Retriever(index, embedder, self.decay(), **kwargs)
 
     # -- diff ------------------------------------------------------------
 
