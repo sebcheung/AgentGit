@@ -17,6 +17,10 @@ agent = [
 mcp = [
     "mcp>=2.1,<3",
 ]
+web = [
+    "fastapi>=0.141.1,<1",
+    "uvicorn>=0.34",
+]
 
 [project.scripts]
 memgit = "memgit.cli:app"
