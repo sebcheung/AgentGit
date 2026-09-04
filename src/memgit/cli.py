@@ -622,6 +622,71 @@ def embed_cmd(
         typer.echo(f"embedded {embedded} new fact(s), {skipped} already present ({embedder.id})")
 
 
+@app.command("recall")
+def recall_cmd(
+    query: str = typer.Argument(..., help="What to search memory for."),
+    rev: str = typer.Argument("HEAD", help="Revision to search — the scope guarantee."),
+    limit: int = typer.Option(8, "-k", "--limit", help="How many facts to return."),
+    subject: str = typer.Option(None, "--subject", help="Restrict to this subject."),
+    min_score: float = typer.Option(0.0, "--min-score", help="Drop results below this score."),
+    as_of: str = typer.Option(None, "--as-of", help="Rank as of this ISO-8601 timestamp (default: now)."),
+    no_decay: bool = typer.Option(False, "--no-decay", help="Ignore confidence decay; rank on similarity alone."),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output."),
+) -> None:
+    """Search memory at REV for facts relevant to QUERY — the demo command.
+
+    Shows exactly what the ``recall`` agent tool and a retrieval-mode prompt
+    would see: the same :class:`~memgit.retrieval.rank.Retriever` code path,
+    scoped to REV by construction (see ``retrieval/rank.py``'s module
+    docstring) rather than by a filter that could leak a later commit or
+    another branch.
+    """
+    repo = _repo()
+    try:
+        resolved = repo.resolve(rev)
+    except RevisionNotFoundError as exc:
+        _fail(f"unknown revision: {exc}")
+        return
+
+    state = repo.state(resolved)
+    weight = 0.0 if no_decay else None
+    retriever = repo.retriever(confidence_weight=weight)
+    moment = _parse_as_of(as_of)
+
+    result = retriever.retrieve(
+        state,
+        query,
+        k=limit,
+        as_of=moment,
+        subjects={subject} if subject is not None else None,
+        min_score=min_score,
+    )
+
+    if as_json:
+        payload = {
+            "query": result.query,
+            "commit": result.commit,
+            "candidates": result.candidates,
+            "embedder": result.embedder,
+            "as_of": result.as_of,
+            "facts": [
+                {
+                    **r.fact.to_dict(),
+                    "score": r.score,
+                    "similarity": r.similarity,
+                    "confidence": r.confidence,
+                }
+                for r in result.facts
+            ],
+        }
+        typer.echo(json.dumps(payload, indent=2, ensure_ascii=False))
+        return
+
+    label = f"{rev} ({resolved[:8]})"
+    typer.echo(f"{len(result.facts)} of {result.candidates} fact(s) at {label}")
+    typer.echo(result.render())
+
+
 @app.command("state")
 def state_cmd(
     rev: str = typer.Argument("HEAD", help="Revision whose memory state to show."),
