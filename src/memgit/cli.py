@@ -25,6 +25,7 @@ from memgit.core.repository import (
     RevisionNotFoundError,
 )
 from memgit.core.store import CorruptObjectError, ObjectNotFoundError, hash_object
+from memgit.retrieval.embed import embed_text
 
 app = typer.Typer(
     name="memgit",
@@ -570,6 +571,55 @@ def reflog_cmd(
     for offset, entry in enumerate(reversed(entries)):
         short = (entry.new or "0" * 64)[:8]
         typer.echo(f"{short} {ref}@{{{offset}}}: {entry.op}: {entry.message}")
+
+
+@app.command("embed")
+def embed_cmd(
+    rev: str = typer.Argument(
+        None, help="Only embed facts reachable from this revision (default: every branch)."
+    ),
+    rebuild: bool = typer.Option(
+        False, "--rebuild", help="Recompute and overwrite vectors already cached."
+    ),
+    stats: bool = typer.Option(False, "--stats", help="Print how many facts were embedded."),
+) -> None:
+    """Warm the vector cache — the backfill for repositories predating retrieval.
+
+    Retrieval also embeds lazily on a cache miss, so this command is never
+    required for correctness; it exists to make ``memgit recall`` fast the
+    first time it runs against an existing repository, and to make the
+    cache's cost visible with ``--stats``.
+    """
+    repo = _repo()
+    embedder = repo.embedder()
+    index = repo.vector_index(embedder)
+
+    if rev is not None:
+        try:
+            starts = [repo.resolve(rev)]
+        except RevisionNotFoundError as exc:
+            _fail(f"unknown revision: {exc}")
+            return
+    else:
+        starts = list(repo.branches().values())
+
+    fact_hashes: set[str] = set()
+    for start in starts:
+        for _commit_hash, commit in walk(start, repo.read_commit):
+            fact_hashes.update(repo.read_tree(commit.tree).fact_hashes())
+
+    embedded = 0
+    skipped = 0
+    for fact_hash in sorted(fact_hashes):
+        if not rebuild and fact_hash in index:
+            skipped += 1
+            continue
+        fact = repo.read_fact(fact_hash)
+        index.put(fact_hash, embedder.embed(embed_text(fact)), force=rebuild)
+        embedded += 1
+
+    if stats:
+        typer.echo(f"embedded {embedded} new fact(s), {skipped} already present ({embedder.id})")
 
 
 @app.command("state")
