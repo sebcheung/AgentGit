@@ -20,11 +20,28 @@ from memgit.agent.tools import (
     RecallCall,
     RememberCall,
     ToolCallError,
+    apply_forget,
+    apply_remember,
     decode_forget,
     decode_recall,
     decode_remember,
     tool_schemas,
 )
+from memgit.core.cardinality import CardinalityMap
+from memgit.core.fact import Fact
+from memgit.core.state import MemoryState
+
+
+def make_fact(**overrides) -> Fact:
+    defaults = dict(
+        subject="user",
+        predicate="prefers_language",
+        object="Python",
+        confidence=0.9,
+        asserted_at="2026-08-11T12:00:00+00:00",
+    )
+    defaults.update(overrides)
+    return Fact(**defaults)
 
 
 class TestSchemas:
@@ -147,3 +164,84 @@ class TestDecodeRecall:
     def test_bool_limit_raises_tool_call_error(self):
         with pytest.raises(ToolCallError):
             decode_recall({"query": "editor", "subject": None, "limit": True})
+
+
+class TestApplyRemember:
+    """Direct tests for the fold moved here from ``runtime._merge_remember``.
+
+    These don't need an LLM fake at all — the point of moving the fold into
+    this module — which is exactly what lets the MCP server's staging path
+    (slice 8) exercise the identical cardinality-map behavior without
+    reaching for ``MemoryAgent``.
+    """
+
+    def test_new_key_is_added(self):
+        state = MemoryState.empty()
+        call = decode_remember(
+            {
+                "subject": "user", "predicate": "prefers_language", "object": "Python",
+                "confidence": 0.9, "source_text": "I like Python",
+            },
+            source="test",
+        )
+        result = apply_remember(state, call, CardinalityMap.default_map())
+        assert [f.object for f in result.facts] == ["Python"]
+
+    def test_same_triple_reaffirms_rather_than_duplicates(self):
+        existing = make_fact(source_text="orig")
+        state = MemoryState.from_facts([existing])
+        call = decode_remember(
+            {
+                "subject": "user", "predicate": "prefers_language", "object": "Python",
+                "confidence": 0.99, "source_text": "still Python",
+            },
+            source="test",
+        )
+        result = apply_remember(state, call, CardinalityMap.default_map())
+        assert len(result.facts) == 1
+        assert result.facts[0].confidence == 0.99
+
+    def test_single_predicate_replaces_the_old_value(self):
+        state = MemoryState.from_facts([make_fact(object="Python")])
+        call = decode_remember(
+            {
+                "subject": "user", "predicate": "prefers_language", "object": "Rust",
+                "confidence": 0.9, "source_text": "switched to Rust",
+            },
+            source="test",
+        )
+        cardinality = CardinalityMap.default_map()
+        assert not cardinality.is_multi("prefers_language")
+        result = apply_remember(state, call, cardinality)
+        assert [f.object for f in result.facts] == ["Rust"]
+
+    def test_multi_predicate_adds_alongside_the_old_value(self):
+        state = MemoryState.from_facts([make_fact(predicate="likes", object="chess")])
+        cardinality = CardinalityMap.default_map().with_predicate("likes", "multi")
+        call = decode_remember(
+            {
+                "subject": "user", "predicate": "likes", "object": "go",
+                "confidence": 0.9, "source_text": "also likes go",
+            },
+            source="test",
+        )
+        result = apply_remember(state, call, cardinality)
+        assert {f.object for f in result.facts} == {"chess", "go"}
+
+
+class TestApplyForget:
+    def test_forget_with_no_object_removes_every_value_at_the_key(self):
+        state = MemoryState.from_facts(
+            [make_fact(predicate="likes", object="chess"), make_fact(predicate="likes", object="go")]
+        )
+        call = decode_forget({"subject": "user", "predicate": "likes", "object": None, "reason": "changed mind"})
+        result = apply_forget(state, call)
+        assert result.get("user", "likes") == ()
+
+    def test_forget_with_an_object_removes_only_that_value(self):
+        state = MemoryState.from_facts(
+            [make_fact(predicate="likes", object="chess"), make_fact(predicate="likes", object="go")]
+        )
+        call = decode_forget({"subject": "user", "predicate": "likes", "object": "chess", "reason": "no longer"})
+        result = apply_forget(state, call)
+        assert [f.object for f in result.get("user", "likes")] == ["go"]

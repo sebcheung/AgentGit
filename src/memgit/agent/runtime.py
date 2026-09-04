@@ -47,11 +47,11 @@ from typing import Any, Mapping
 from memgit.agent.client import AgentError, LLMClient, default_client
 from memgit.agent.prompt import build_system_prompt
 from memgit.agent.tools import (
-    ForgetCall,
     RecallCall,
-    RememberCall,
     ToolCallError,
     TOOL_SCHEMAS,
+    apply_forget,
+    apply_remember,
     decode_forget,
     decode_recall,
     decode_remember,
@@ -93,43 +93,6 @@ class TurnResult:
     after: MemoryState
     tool_calls: tuple[ToolCallRecord, ...]
     stop_reason: str
-
-
-def _merge_remember(state: MemoryState, call: RememberCall, cardinality: CardinalityMap) -> MemoryState:
-    """Fold one ``remember`` onto ``state``, per the repo's cardinality map.
-
-    The exact same triple already present is a reaffirmation (replace, so
-    the diff engine reports ``reaffirmed`` rather than a spurious
-    duplicate). Otherwise: a ``single`` predicate replaces whatever was at
-    the key (``contradicted``); a ``multi`` predicate adds alongside
-    (``value_added``). Consulting the cardinality map here does not violate
-    "a diff is a question you ask, not data you store" — the runtime is a
-    client of that repo-local lens exactly as ``memgit diff`` is, and
-    nothing about this merge is itself hashed or committed.
-    """
-    fact = call.fact
-    existing = state.get(*fact.key)
-    same_triple = tuple(f for f in existing if f.triple == fact.triple)
-    if same_triple:
-        dropped = {f.hash for f in same_triple}
-        kept = tuple(f for f in state.facts if f.hash not in dropped)
-    elif cardinality.is_multi(fact.predicate):
-        kept = state.facts
-    else:
-        kept = tuple(f for f in state.facts if f.key != fact.key)
-    return MemoryState.from_facts((*kept, fact))
-
-
-def _merge_forget(state: MemoryState, call: ForgetCall) -> MemoryState:
-    """Fold one ``forget`` onto ``state``."""
-    if call.object is None:
-        return state.without(call.key)
-    subject, predicate = call.key
-    result = state
-    for fact in state.get(subject, predicate):
-        if fact.object == call.object:
-            result = result.without_fact(fact.hash)
-    return result
 
 
 def run_tool_loop(
@@ -233,11 +196,11 @@ def _apply_tool_call(
     try:
         if block.name == "remember":
             call = decode_remember(block.input, source=source)
-            working = _merge_remember(working, call, cardinality)
+            working = apply_remember(working, call, cardinality)
             content = f"remembered {call.fact.subject} {call.fact.predicate} {call.fact.object}"
         elif block.name == "forget":
             call = decode_forget(block.input)
-            working = _merge_forget(working, call)
+            working = apply_forget(working, call)
             target = call.key[0] + " " + call.key[1]
             content = f"forgot {target}" + (f"={call.object}" if call.object else " (all values)")
         elif block.name == "recall" and retriever is not None:

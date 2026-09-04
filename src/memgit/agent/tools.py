@@ -25,12 +25,25 @@ would let the model act on facts it was shown twice under two different
 guises, which is not the leak PLAN.md's retrieval-layer decision warns
 about, but is exactly as pointless.
 
-This module has no dependency on ``Repository``, an LLM client, or the
-network — only on :class:`~memgit.core.fact.Fact`. That is deliberate:
-slice 8's MCP server is documented in PLAN.md as "moved up — the tool-call
-fact-write decision makes this nearly the same code as slice 4," and this is
-the code it shares. ``recall``'s *decoder* lives here for the same reason;
-the retrieval it triggers is the runtime's job, not this module's.
+This module has no dependency on ``Repository`` or an LLM client — only on
+:class:`~memgit.core.fact.Fact`, :class:`~memgit.core.state.MemoryState`, and
+:class:`~memgit.core.cardinality.CardinalityMap`, all of them core and
+offline. That is deliberate: slice 8's MCP server is documented in PLAN.md as
+"moved up — the tool-call fact-write decision makes this nearly the same
+code as slice 4," and this module — decoders *and* the :func:`apply_remember`
+/ :func:`apply_forget` folds below — is the code it shares with
+``agent/runtime.py``. ``recall``'s *decoder* lives here for the same reason;
+the retrieval it triggers is the runtime's (or the MCP server's) job, not
+this module's.
+
+``apply_remember``/``apply_forget`` used to be private to ``runtime.py``
+(``_merge_remember``/``_merge_forget``). They moved here, unchanged in
+behavior, because ``decode_X`` (tool input → a typed call) and ``apply_X``
+(a typed call → a new :class:`~memgit.core.state.MemoryState`) are two
+halves of one contract — the same one this module's own docstring claims for
+the MCP server above. Splitting them across ``agent/tools.py`` and
+``agent/runtime.py`` would leave the cardinality-map write rule with two
+places to go stale independently the first time it changes.
 """
 
 from __future__ import annotations
@@ -38,7 +51,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from memgit.core.cardinality import CardinalityMap
 from memgit.core.fact import Fact, FactKey
+from memgit.core.state import MemoryState
 
 __all__ = [
     "REMEMBER_SCHEMA",
@@ -53,6 +68,8 @@ __all__ = [
     "decode_remember",
     "decode_forget",
     "decode_recall",
+    "apply_remember",
+    "apply_forget",
     "tool_schemas",
 ]
 
@@ -317,3 +334,40 @@ def decode_recall(payload: dict[str, Any]) -> RecallCall:
         raise ToolCallError("recall: limit must be a positive integer")
 
     return RecallCall(query=query, subject=subject, limit=limit)
+
+
+def apply_remember(state: MemoryState, call: RememberCall, cardinality: CardinalityMap) -> MemoryState:
+    """Fold one ``remember`` onto ``state``, per the repo's cardinality map.
+
+    The exact same triple already present is a reaffirmation (replace, so
+    the diff engine reports ``reaffirmed`` rather than a spurious
+    duplicate). Otherwise: a ``single`` predicate replaces whatever was at
+    the key (``contradicted``); a ``multi`` predicate adds alongside
+    (``value_added``). Consulting the cardinality map here does not violate
+    "a diff is a question you ask, not data you store" — a caller applying
+    this fold is a client of that repo-local lens exactly as ``memgit diff``
+    is, and nothing about this merge is itself hashed or committed.
+    """
+    fact = call.fact
+    existing = state.get(*fact.key)
+    same_triple = tuple(f for f in existing if f.triple == fact.triple)
+    if same_triple:
+        dropped = {f.hash for f in same_triple}
+        kept = tuple(f for f in state.facts if f.hash not in dropped)
+    elif cardinality.is_multi(fact.predicate):
+        kept = state.facts
+    else:
+        kept = tuple(f for f in state.facts if f.key != fact.key)
+    return MemoryState.from_facts((*kept, fact))
+
+
+def apply_forget(state: MemoryState, call: ForgetCall) -> MemoryState:
+    """Fold one ``forget`` onto ``state``."""
+    if call.object is None:
+        return state.without(call.key)
+    subject, predicate = call.key
+    result = state
+    for fact in state.get(subject, predicate):
+        if fact.object == call.object:
+            result = result.without_fact(fact.hash)
+    return result
