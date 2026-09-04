@@ -121,8 +121,8 @@ increment, tested before moving on:
 | 3. Diff engine | 4 | ✅ |
 | 4. Checkout / rewind | 5 | ✅ |
 | 5. Agent runtime | 6 | ✅ |
-| 6. Replay / ablation | 7 | ← next |
-| 7. Retrieval + confidence decay | 8 + 9 (merged) | |
+| 6. Replay / ablation | 7 | ✅ |
+| 7. Retrieval + confidence decay | 8 + 9 (merged) | ← next |
 | 8. MCP server | 10 (moved up — the tool-call fact-write decision makes this nearly the same code as slice 4) | |
 | 9. Eval suite | 11 | |
 | 10. FastAPI + dashboard | 12 | |
@@ -160,6 +160,8 @@ Design choices already made and built on, not up for re-litigation without a rea
 | Agent commit messages | Derived from the applied ops and the query, never model-authored | A model-authored message can disagree with what the diff actually shows. In a tool whose premise is trustworthy history, a terse derived message beats a plausible but possibly-wrong one. |
 | Agent turn granularity | One turn = one commit, written once after the tool-calling loop ends, `allow_empty` off by default | A turn is the unit a human attributes; per-tool-call commits would record beliefs the model revises within the same turn, and an API failure mid-loop would leave memory half-written. A turn that remembers nothing produces no commit unless `--record-empty` is passed — `EmptyCommitError`'s own docstring calls recording no-ops "a deliberate choice for that caller to make," not a default, since it would fill the log with identical trees from every chit-chat turn. |
 | Transcript vs. memory | The chat transcript lives only in-process, for one `MemoryAgent`; it is never committed | Persisting it would be exactly the "mutable, uncommitted, unhashed state" the no-index decision above already refuses. Memory crosses a process boundary through commits, not through the transcript — each turn re-reads `HEAD` and rebuilds the system prompt from it, so a fact remembered in one `memgit chat` invocation reaches the next. |
+| Replay / ablation | `memgit replay` never calls `Repository.commit`; it runs two fresh, isolated one-turn conversations (baseline and ablated) sharing nothing but the `LLMClient` | An ablated `MemoryState` already drops its `commit` provenance (see `state.py`) — persisting one back into history would fabricate a belief the agent never held. Each replay starts its own `messages` list rather than reusing `MemoryAgent`'s transcript, so the only variable between the two runs is the one ablated belief, not conversational drift. |
+| `AblationResult.changed` | Literal string inequality between the two replies, not a semantic diff | Cheap and honest about what it is: evidence a belief mattered, not proof — see "Honest caveats" below. Semantic-equivalence checking is a retrieval/eval-suite-grade problem (slices 7 and 9), not this slice's. |
 
 ---
 
