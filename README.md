@@ -120,10 +120,12 @@ silent gap.
 ## Talking to it
 
 `memgit ask` and `memgit chat` run a real `claude-opus-5` turn against the
-memory at `HEAD`. The whole state is shown to the model; `remember` and
-`forget` are the only tools it can call to change it; whatever it decides
-lands as one commit — unless it decides nothing, in which case nothing is
-committed:
+memory at `HEAD`. Below 64 facts, the whole state is shown to the model, as
+in slice 5; above it, a turn retrieves only the facts most relevant to the
+query and the model can call `recall` to search the rest — see
+[Retrieval and decay](#retrieval-and-decay) below. `remember` and `forget`
+are the only tools that change memory; whatever the model decides lands as
+one commit — unless it decides nothing, in which case nothing is committed:
 
 ```sh
 $ memgit ask "I mostly write Python, and my timezone is Europe/Berlin."
@@ -161,7 +163,49 @@ That's the "gave wrong answer, removed a belief, replayed, answer changed"
 case PLAN.md's metrics section asks for — a single command instead of a
 manual before/after. A changed reply is evidence the ablated fact mattered,
 not proof: see PLAN.md's "Honest caveats" on the limits of ablation as a
-methodology.
+methodology — including a retrieval-specific one, since `replay` pins one
+retrieved set for both sides rather than re-retrieving after ablation, to
+keep the experiment down to one variable.
+
+## Retrieval and decay
+
+Once a repository crosses 64 facts, `memgit ask`/`chat` stop injecting the
+whole memory and instead retrieve the top-k facts most relevant to the
+query — scoped to exactly the commit or branch being read, by construction:
+retrieval only ever ranks the facts already materialized by
+`Repository.state(rev)`, never a separate index, so a fact from a later
+commit or another branch cannot leak in even if its vector is already
+cached. A full `(subject, predicate)` key inventory is injected alongside
+the retrieved subset, so the model can still recognize an existing belief it
+wasn't shown in full rather than inventing a near-duplicate predicate for
+it — and the model can call `recall` to search the rest directly:
+
+```sh
+$ memgit recall "what editor does the user prefer" HEAD
+3 of 214 fact(s) at HEAD (a1b2c3d4)
+  user favorite_editor neovim (score=0.81, sim=0.74, conf=0.95)
+  ...
+```
+
+Ranking blends similarity with **temporal confidence decay** — a belief
+loses confidence over time (an exponential half-life over `asserted_at`,
+180 days by default) unless reaffirmed by a later commit, which resets it
+for free: a reaffirmation is just a new fact at the same key with a fresh
+timestamp. Decay is a read lens, never stored — `memgit diff` and `memgit
+log` always show the confidence that was actually asserted:
+
+```sh
+$ memgit decay set favorite_editor 30
+$ memgit state --as-of 2027-01-01T00:00:00Z
+  user favorite_editor neovim (0.95)  [as of 2027-01-01T00:00:00+00:00: 0.12]
+```
+
+The default embedder is a deterministic, zero-dependency lexical hash — no
+torch, no API key, fully offline — behind an `Embedder` seam shaped like the
+LLM client seam, so a real semantic model can drop in later without
+touching the retrieval or agent code around it. See PLAN.md's "Decisions
+locked in" for the full reasoning, including why this isn't backed by a
+vector database.
 
 ## Quickstart
 
