@@ -8,6 +8,8 @@ these tests only exercise CLI surface.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from typer.testing import CliRunner
 
@@ -111,3 +113,53 @@ class TestReplay:
 
         assert result.exit_code == 1
         assert "no API key configured" in result.output
+
+
+class TestReplayRetrievalMode:
+    def _seed_above_threshold(self, monkeypatch):
+        import json as _json
+
+        runner.invoke(app, ["init"])
+        facts = [
+            {
+                "type": "fact", "subject": "user", "predicate": f"fact_{i}", "object": f"value_{i}",
+                "confidence": 0.9, "asserted_at": "2026-09-01T00:00:00+00:00",
+            }
+            for i in range(64)
+        ]
+        facts.append({
+            "type": "fact", "subject": "user", "predicate": "prefers_language", "object": "Python",
+            "confidence": 0.9, "asserted_at": "2026-09-01T00:00:00+00:00",
+        })
+        with open("many_facts.json", "w", encoding="utf-8") as handle:
+            handle.write(_json.dumps(facts))
+        result = runner.invoke(app, ["commit", "-m", "seed", "--file", "many_facts.json"])
+        assert result.exit_code == 0, result.output
+
+    def test_json_output_includes_retrieval_provenance(self, monkeypatch):
+        self._seed_above_threshold(monkeypatch)
+        _patch_client(
+            monkeypatch,
+            ScriptedClient(responses=[text_message("You prefer Python."), text_message("I don't know.")]),
+        )
+
+        result = runner.invoke(
+            app, ["replay", "HEAD", "user", "prefers_language", "what do I prefer?", "--json"]
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert "retrieval" in payload
+        assert payload["retrieval"]["embedder"].startswith("hash-v1/")
+
+    def test_human_output_notes_pinned_retrieval(self, monkeypatch):
+        self._seed_above_threshold(monkeypatch)
+        _patch_client(
+            monkeypatch,
+            ScriptedClient(responses=[text_message("a"), text_message("b")]),
+        )
+
+        result = runner.invoke(app, ["replay", "HEAD", "user", "prefers_language", "q"])
+
+        assert result.exit_code == 0
+        assert "pinned for both sides" in result.output

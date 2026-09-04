@@ -949,24 +949,33 @@ def replay_cmd(
         return
 
     if as_json:
-        typer.echo(
-            json.dumps(
-                {
-                    "query": result.query,
-                    "key": list(result.key),
-                    "fact_hash": result.fact_hash,
-                    "baseline": {"reply": result.baseline.reply, "stop_reason": result.baseline.stop_reason},
-                    "ablated": {"reply": result.ablated.reply, "stop_reason": result.ablated.stop_reason},
-                    "changed": result.changed,
-                },
-                indent=2,
-                ensure_ascii=False,
-            )
-        )
+        payload = {
+            "query": result.query,
+            "key": list(result.key),
+            "fact_hash": result.fact_hash,
+            "baseline": {"reply": result.baseline.reply, "stop_reason": result.baseline.stop_reason},
+            "ablated": {"reply": result.ablated.reply, "stop_reason": result.ablated.stop_reason},
+            "changed": result.changed,
+        }
+        if result.retrieved is not None:
+            payload["retrieval"] = {
+                "k": len(result.retrieved.facts),
+                "candidates": result.retrieved.candidates,
+                "embedder": result.retrieved.embedder,
+                "as_of": result.retrieved.as_of,
+                "pinned": [r.fact.hash for r in result.retrieved.facts],
+            }
+        typer.echo(json.dumps(payload, indent=2, ensure_ascii=False))
         return
 
     typer.echo(f"baseline> {result.baseline.reply}")
     typer.echo(f"ablated>  {result.ablated.reply}")
+    if result.retrieved is not None:
+        typer.echo(
+            f"(retrieval: {len(result.retrieved.facts)} of {result.retrieved.candidates} "
+            f"fact(s) pinned for both sides)",
+            err=True,
+        )
     color = typer.colors.YELLOW if result.changed else typer.colors.CYAN
     typer.secho(f"changed: {'yes' if result.changed else 'no'}", fg=color, err=True)
 
