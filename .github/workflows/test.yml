@@ -28,3 +28,60 @@ jobs:
       - uses: astral-sh/setup-uv@v3
       - run: uv sync --all-extras
       - run: uv run mypy
+
+  pytest-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: memgit
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: memgit
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U memgit"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://memgit:test@localhost:5432/memgit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --all-extras
+      - run: uv run pytest -m postgres
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Write a CI-only .env
+        run: |
+          echo "POSTGRES_PASSWORD=ci-test-password" >> .env
+          echo "MEMGIT_API_KEY=ci-test-api-key" >> .env
+      - name: Build and start the stack
+        run: docker compose up -d --build
+      - name: Wait for the API to report healthy
+        run: |
+          for _ in $(seq 1 30); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' "$(docker compose ps -q api)")
+            [ "$status" = "healthy" ] && exit 0
+            sleep 2
+          done
+          docker compose logs
+          exit 1
+      - name: Check liveness and readiness
+        run: |
+          curl -sf http://localhost:8001/api/health
+          curl -sf http://localhost:8001/api/ready
+      - name: Check the API-key gate
+        run: |
+          status=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8001/api/repo)
+          test "$status" = "401"
+          status=$(curl -s -o /dev/null -w '%{http_code}' -H "X-API-Key: ci-test-api-key" http://localhost:8001/api/repo)
+          test "$status" = "200"
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
