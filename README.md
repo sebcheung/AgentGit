@@ -143,6 +143,26 @@ inspectable. `memgit chat` is the same turn loop as a REPL, with `/state`,
 "Decisions locked in" for why the tool surface is exactly `remember` and
 `forget`, and why commit messages are derived rather than model-authored.
 
+## Explaining it: replay and ablation
+
+`memgit replay` is the causal-attribution tool: it runs the same query twice
+against a memory state — once as-is, once with one belief removed — and
+reports whether the model's answer changed. Neither run commits anything;
+an ablated state is explicitly not a real point in history.
+
+```sh
+$ memgit replay HEAD user prefers_language "what language do I prefer?"
+baseline> You prefer Python.
+ablated>  I don't know your language preference.
+changed: yes
+```
+
+That's the "gave wrong answer, removed a belief, replayed, answer changed"
+case PLAN.md's metrics section asks for — a single command instead of a
+manual before/after. A changed reply is evidence the ablated fact mattered,
+not proof: see PLAN.md's "Honest caveats" on the limits of ablation as a
+methodology.
+
 ## Quickstart
 
 ```sh
