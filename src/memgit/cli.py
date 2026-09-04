@@ -751,6 +751,70 @@ def _print_turn_result(repo: Repository, result: "TurnResult") -> None:
     _print_diff_stat(repo.diff(after=result.commit))
 
 
+@app.command("replay")
+def replay_cmd(
+    revision: str = typer.Argument(..., help="Memory state to replay from."),
+    subject: str = typer.Argument(..., help="Subject of the belief to ablate."),
+    predicate: str = typer.Argument(..., help="Predicate of the belief to ablate."),
+    query: str = typer.Argument(..., help="Query to replay against both states."),
+    model: str = typer.Option("claude-opus-5", "--model", help="Model to replay with."),
+    fact: str = typer.Option(
+        None, "--fact", help="Ablate only this one fact hash at (subject, predicate), not every value there."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output."),
+) -> None:
+    """Replay QUERY against REVISION with and without one belief — never commits.
+
+    Runs the same query twice: once against the memory at REVISION, once
+    against that same state with (SUBJECT, PREDICATE) removed. Neither run
+    changes the repository — this is an experiment, not a turn. See PLAN.md's
+    "Honest caveats": a changed reply is evidence, not proof, that the
+    ablated belief caused it.
+    """
+    from memgit.agent.client import AgentError
+    from memgit.replay.engine import ablate_and_replay
+
+    repo = _repo()
+    try:
+        client = _agent_client(model)
+    except AgentError as exc:
+        _fail(str(exc))
+        return
+
+    try:
+        result = ablate_and_replay(
+            repo, revision, (subject, predicate), query, client=client, model=model, fact_hash=fact
+        )
+    except RevisionNotFoundError as exc:
+        _fail(f"unknown revision: {exc}")
+        return
+    except AgentError as exc:
+        _fail(str(exc))
+        return
+
+    if as_json:
+        typer.echo(
+            json.dumps(
+                {
+                    "query": result.query,
+                    "key": list(result.key),
+                    "fact_hash": result.fact_hash,
+                    "baseline": {"reply": result.baseline.reply, "stop_reason": result.baseline.stop_reason},
+                    "ablated": {"reply": result.ablated.reply, "stop_reason": result.ablated.stop_reason},
+                    "changed": result.changed,
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return
+
+    typer.echo(f"baseline> {result.baseline.reply}")
+    typer.echo(f"ablated>  {result.ablated.reply}")
+    color = typer.colors.YELLOW if result.changed else typer.colors.CYAN
+    typer.secho(f"changed: {'yes' if result.changed else 'no'}", fg=color, err=True)
+
+
 @app.command("ask")
 def ask_cmd(
     message: str = typer.Argument(..., help="What to say to the agent."),
