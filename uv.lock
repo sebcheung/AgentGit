@@ -531,6 +531,7 @@ web = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "httpx" },
     { name = "pytest" },
 ]
 
@@ -545,7 +546,10 @@ requires-dist = [
 provides-extras = ["agent", "mcp", "web"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8.3.0" }]
+dev = [
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "pytest", specifier = ">=8.3.0" },
+]
 
 [[package]]
 name = "opentelemetry-api"
