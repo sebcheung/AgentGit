@@ -24,8 +24,10 @@ from memgit.agent.client import AgentError, AnthropicClient
 class _FakeMessages:
     def __init__(self, exc: Exception) -> None:
         self._exc = exc
+        self.calls = 0
 
     def create(self, **kwargs):
+        self.calls += 1
         raise self._exc
 
 
@@ -101,3 +103,49 @@ class TestLogging:
         names = [r.message for r in caplog.records]
         assert "agent.request" in names
         assert "agent.error" in names
+
+
+class TestRetryConfiguration:
+    """``max_retries``/``timeout`` configure the SDK's own retry, not a second one here."""
+
+    def test_default_construction_passes_max_retries_and_timeout_to_the_sdk(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        class _FakeAnthropicCtor:
+            def __init__(self, **kwargs: object) -> None:
+                captured.update(kwargs)
+
+        monkeypatch.setattr(anthropic, "Anthropic", _FakeAnthropicCtor)
+
+        AnthropicClient(max_retries=7, timeout=42.0)
+
+        assert captured["max_retries"] == 7
+        assert captured["timeout"] == 42.0
+
+    def test_an_injected_client_bypasses_sdk_construction_entirely(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _fail_if_called(**kwargs: object) -> None:
+            raise AssertionError("anthropic.Anthropic() should not be called when a client is injected")
+
+        monkeypatch.setattr(anthropic, "Anthropic", _fail_if_called)
+
+        AnthropicClient(client=_FakeSucceedingAnthropicClient(text_message("hi")), max_retries=99)
+
+    def test_create_message_calls_the_client_exactly_once_on_failure(self) -> None:
+        # AnthropicClient.create_message must not retry on its own -- the
+        # SDK's `max_retries` already does, one layer below this fake, so a
+        # second retry loop here would double the attempts a real failure
+        # gets. Asserting a single call is what proves this wrapper is pure
+        # pass-through, not a rival retry mechanism.
+        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        exc = anthropic.APIConnectionError(request=request)
+        fake = _FakeAnthropicClient(exc)
+        client = AnthropicClient(client=fake)
+
+        with pytest.raises(AgentError):
+            client.create_message(system=[], messages=[], tools=[])
+
+        assert fake.messages.calls == 1
