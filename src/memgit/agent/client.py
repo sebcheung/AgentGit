@@ -82,11 +82,20 @@ class AnthropicClient:
         model: str = "claude-opus-5",
         max_tokens: int = 16000,
         client: Any | None = None,
+        max_retries: int = 3,
+        timeout: float = 120.0,
     ) -> None:
         if client is None:
             import anthropic
 
-            client = anthropic.Anthropic()
+            # The SDK already retries 408/409/429/5xx and connection errors
+            # with exponential backoff, honoring `retry-after` -- a second
+            # retry loop wrapped around this would multiply attempts (N x M
+            # instead of N + M) and ignore `retry-after` entirely, turning
+            # one 429 into a small self-inflicted DDoS. `max_retries`/
+            # `timeout` configure the SDK's own mechanism; `client.py` only
+            # adds observability around it (see `create_message`'s logging).
+            client = anthropic.Anthropic(max_retries=max_retries, timeout=timeout)
         # Typed `Any`, not the SDK's `Anthropic`: narrowing it further would
         # make mypy check `create_message`'s call below against the SDK's
         # own precise overloads, defeating the whole point of the flattened

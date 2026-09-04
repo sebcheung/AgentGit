@@ -889,7 +889,7 @@ def fsck_cmd() -> None:
     typer.secho("all objects verified", fg=typer.colors.GREEN)
 
 
-def _agent_client(model: str) -> Any:
+def _agent_client(model: str, *, max_retries: int = 3, timeout: float = 120.0) -> Any:
     """Build the real Anthropic-backed client. The one seam tests monkeypatch.
 
     Kept as its own function, rather than inlined into :func:`_make_agent`,
@@ -898,15 +898,17 @@ def _agent_client(model: str) -> Any:
     """
     from memgit.agent.client import default_client
 
-    return default_client(model=model)
+    return default_client(model=model, max_retries=max_retries, timeout=timeout)
 
 
-def _make_agent(repo: Repository, *, model: str, record_empty: bool) -> MemoryAgent:
+def _make_agent(
+    repo: Repository, *, model: str, record_empty: bool, max_retries: int = 3, timeout: float = 120.0
+) -> MemoryAgent:
     from memgit.agent.client import AgentError
     from memgit.agent.runtime import MemoryAgent
 
     try:
-        client = _agent_client(model)
+        client = _agent_client(model, max_retries=max_retries, timeout=timeout)
     except AgentError as exc:
         _fail(str(exc))
         raise  # unreachable
@@ -933,6 +935,8 @@ def replay_cmd(
     fact: str = typer.Option(
         None, "--fact", help="Ablate only this one fact hash at (subject, predicate), not every value there."
     ),
+    max_retries: int = typer.Option(3, "--max-retries", help="SDK-level retries on 408/409/429/5xx."),
+    timeout: float = typer.Option(120.0, "--timeout", help="Per-request timeout, in seconds."),
     as_json: bool = typer.Option(False, "--json", help="Machine-readable output."),
 ) -> None:
     """Replay QUERY against REVISION with and without one belief — never commits.
@@ -948,7 +952,7 @@ def replay_cmd(
 
     repo = _repo()
     try:
-        client = _agent_client(model)
+        client = _agent_client(model, max_retries=max_retries, timeout=timeout)
     except AgentError as exc:
         _fail(str(exc))
         return
@@ -1003,6 +1007,8 @@ def ask_cmd(
     record_empty: bool = typer.Option(
         False, "--record-empty", help="Commit even when the turn remembers nothing."
     ),
+    max_retries: int = typer.Option(3, "--max-retries", help="SDK-level retries on 408/409/429/5xx."),
+    timeout: float = typer.Option(120.0, "--timeout", help="Per-request timeout, in seconds."),
     as_json: bool = typer.Option(False, "--json", help="Machine-readable output."),
 ) -> None:
     """Run one turn against the memory at HEAD, and commit whatever it remembers.
@@ -1015,7 +1021,7 @@ def ask_cmd(
     from memgit.agent.client import AgentError
 
     repo = _repo()
-    agent = _make_agent(repo, model=model, record_empty=record_empty)
+    agent = _make_agent(repo, model=model, record_empty=record_empty, max_retries=max_retries, timeout=timeout)
     try:
         result = agent.turn(message)
     except AgentError as exc:
@@ -1041,6 +1047,8 @@ def chat_cmd(
     record_empty: bool = typer.Option(
         False, "--record-empty", help="Commit even when a turn remembers nothing."
     ),
+    max_retries: int = typer.Option(3, "--max-retries", help="SDK-level retries on 408/409/429/5xx."),
+    timeout: float = typer.Option(120.0, "--timeout", help="Per-request timeout, in seconds."),
 ) -> None:
     """An interactive REPL against the memory at HEAD.
 
@@ -1051,7 +1059,7 @@ def chat_cmd(
     without spending a turn; ``/quit`` (or EOF) exits.
     """
     repo = _repo()
-    agent = _make_agent(repo, model=model, record_empty=record_empty)
+    agent = _make_agent(repo, model=model, record_empty=record_empty, max_retries=max_retries, timeout=timeout)
     typer.echo("memgit chat — /state, /log, /diff, /quit")
 
     from memgit.agent.client import AgentError
@@ -1350,6 +1358,8 @@ def serve_web_cmd(
     host: str = typer.Option("127.0.0.1", "--host", help="Bind address."),
     port: int = typer.Option(8001, "--port", help="Bind port."),
     model: str = typer.Option("claude-opus-5", "--model", help="Model the replay panel replays with."),
+    max_retries: int = typer.Option(3, "--max-retries", help="SDK-level retries on 408/409/429/5xx."),
+    timeout: float = typer.Option(120.0, "--timeout", help="Per-request timeout, in seconds."),
 ) -> None:
     """Run the dashboard and REST API over this repository (slice 10).
 
@@ -1367,7 +1377,7 @@ def serve_web_cmd(
         return
 
     repo = _repo()
-    web_app = create_app(repo, model=model)
+    web_app = create_app(repo, model=model, max_retries=max_retries, timeout=timeout)
     typer.echo(f"memgit dashboard: http://{host}:{port}", err=True)
     uvicorn.run(web_app, host=host, port=port)
 

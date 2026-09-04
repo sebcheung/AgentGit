@@ -26,7 +26,7 @@ def _in_tmp_path(tmp_path, monkeypatch):
 
 
 def _patch_client(monkeypatch, client: ScriptedClient) -> None:
-    monkeypatch.setattr(cli, "_agent_client", lambda model: client)
+    monkeypatch.setattr(cli, "_agent_client", lambda model, **kwargs: client)
 
 
 def _seed(monkeypatch) -> None:
@@ -104,7 +104,7 @@ class TestReplay:
 
         _seed(monkeypatch)
 
-        def _raise(model):
+        def _raise(model, **kwargs):
             raise AgentError("no API key configured")
 
         monkeypatch.setattr(cli, "_agent_client", _raise)
