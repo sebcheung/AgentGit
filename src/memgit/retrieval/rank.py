@@ -146,7 +146,9 @@ class Retriever:
         # depend on whether this call happened to be the one that warmed
         # the cache, which is exactly the kind of nondeterminism a
         # debugging tool cannot afford.
-        return self.index.get(fact.hash)
+        readback = self.index.get(fact.hash)
+        assert readback is not None, "just-written vector must be readable back"
+        return readback
 
     def retrieve(
         self,

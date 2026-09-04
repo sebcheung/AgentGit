@@ -99,5 +99,12 @@ module = "memgit.*"
 ignore_errors = true
 
 [[tool.mypy.overrides]]
+module = ["memgit.core.*", "memgit.retrieval.*"]
+ignore_errors = false
+strict_equality = true
+disallow_any_generics = true
+warn_return_any = true
+
+[[tool.mypy.overrides]]
 module = ["mcp.*", "anthropic.*", "uvicorn.*"]
 ignore_missing_imports = true

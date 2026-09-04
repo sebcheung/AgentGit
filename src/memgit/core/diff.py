@@ -443,7 +443,7 @@ def _classify_key(
     if before_hashes is None:
         assert after_hashes is not None
         after_reps, after_shadowed = _representative(after_hashes, read_fact)
-        values = tuple(
+        added_values = tuple(
             ValueChange(ValueKind.ADDED, obj, None, fact) for obj, fact in sorted(after_reps.items())
         )
         violations = _violations(key, None, after_reps)
@@ -452,7 +452,7 @@ def _classify_key(
                 key=key,
                 kind=ChangeKind.ADDED,
                 cardinality=cardinality,
-                values=values,
+                values=added_values,
                 before_hashes=(),
                 after_hashes=after_hashes,
                 shadowed_after=tuple(f for facts in after_shadowed.values() for f in facts),
@@ -462,7 +462,7 @@ def _classify_key(
 
     if after_hashes is None:
         before_reps, before_shadowed = _representative(before_hashes, read_fact)
-        values = tuple(
+        removed_values = tuple(
             ValueChange(ValueKind.REMOVED, obj, fact, None) for obj, fact in sorted(before_reps.items())
         )
         violations = _violations(key, before_reps, None)
@@ -471,7 +471,7 @@ def _classify_key(
                 key=key,
                 kind=ChangeKind.REMOVED,
                 cardinality=cardinality,
-                values=values,
+                values=removed_values,
                 before_hashes=before_hashes,
                 after_hashes=(),
                 shadowed_before=tuple(f for facts in before_shadowed.values() for f in facts),

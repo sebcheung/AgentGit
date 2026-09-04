@@ -142,7 +142,11 @@ class DecayPolicy:
             return fact.confidence
 
         age = self.age_days(fact, as_of=as_of)
-        value = fact.confidence * 0.5 ** (age / half_life)
+        # `0.5 ** x` types as `Any` in typeshed -- a negative base raised to a
+        # fractional exponent can be complex, which a `float`-only overload
+        # can't express. The base here is always positive, so the result is
+        # always a real float; the explicit cast reclaims that for mypy.
+        value = fact.confidence * float(0.5 ** (age / half_life))
         return max(self.floor, value)
 
     # -- derivation ------------------------------------------------------

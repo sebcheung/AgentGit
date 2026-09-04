@@ -59,7 +59,7 @@ import json
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from memgit.core.cardinality import CardinalityMap
 from memgit.core.commit import Commit
@@ -256,7 +256,7 @@ class Repository:
         path = self.memgit_dir / _CONFIG_NAME
         if not path.is_file():
             return {"format_version": self.FORMAT_VERSION}
-        return json.loads(path.read_text(encoding="utf-8"))
+        return cast("dict[str, Any]", json.loads(path.read_text(encoding="utf-8")))
 
     # -- HEAD and branches -----------------------------------------------
 
