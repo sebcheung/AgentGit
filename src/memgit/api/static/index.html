@@ -1,5 +1,30 @@
 <!DOCTYPE html>
 <html lang="en">
-<head><meta charset="utf-8"><title>memgit</title></head>
-<body><p>memgit dashboard — coming in a later commit.</p></body>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>memgit</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <h1>memgit</h1>
+    <span class="field" id="field-root"></span>
+    <span class="field" id="field-branch"></span>
+    <span class="field" id="field-head"></span>
+  </header>
+  <main>
+    <section class="pane" id="graph-pane">
+      <svg id="graph-svg"></svg>
+    </section>
+    <section class="pane" id="side-pane">
+      <div class="tabs">
+        <button id="tab-diff" class="active" type="button">Diff</button>
+        <button id="tab-state" type="button">State</button>
+      </div>
+      <div id="tab-content"></div>
+    </section>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
 </html>
