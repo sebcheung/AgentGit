@@ -245,6 +245,7 @@ def run(
     transport: str = "stdio",
     host: str = "127.0.0.1",
     port: int = 8000,
+    api_key: str | None = None,
 ) -> None:
     """Build and run a server over ``repo``. Blocks for the life of the server.
 
@@ -253,9 +254,34 @@ def run(
     the MCP spec superseded it with Streamable HTTP in the 2025-03-26
     protocol revision, and the SDK's own docs say plainly "don't build
     anything new on it."
+
+    Args:
+        api_key: Required on every streamable-HTTP request when set.
+            Ignored (with a warning) on stdio — the host process already
+            owns the pipe, so a key on a transport it already controls is
+            theater, not a real access boundary.
     """
     server = build_server(repo)
     if transport == "stdio":
+        if api_key is not None:
+            import sys
+
+            print(
+                "warning: --api-key has no effect on stdio -- the host process already "
+                "owns this pipe",
+                file=sys.stderr,
+            )
         server.run(transport="stdio")
-    else:
-        server.run(transport="streamable-http", host=host, port=port)
+        return
+
+    # `MCPServer.run(transport="streamable-http")` has no hook for
+    # middleware, so the key check is applied by hand: build the Starlette
+    # app `run_streamable_http_async` would otherwise build internally, wrap
+    # it in `ApiKeyMiddleware`, and run it the same way that method does.
+    import uvicorn
+
+    from memgit.mcp.transport import ApiKeyMiddleware
+
+    starlette_app = server.streamable_http_app(host=host)
+    gated_app = ApiKeyMiddleware(starlette_app, key=api_key)
+    uvicorn.run(gated_app, host=host, port=port)
