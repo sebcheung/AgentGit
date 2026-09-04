@@ -30,6 +30,7 @@ dev = [
     "pytest>=8.3.0",
     "httpx>=0.27",
     "ruff>=0.9",
+    "mypy>=1.13",
 ]
 
 [build-system]
@@ -79,3 +80,24 @@ convention = "google"
 # gets a docstring only when there is something non-obvious to say about its
 # shape, not one echoing field names back as prose.
 "src/memgit/api/models.py" = ["D101"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src/memgit"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+disallow_untyped_defs = true
+
+# Every package starts ignored; each is flipped on in its own commit as it's
+# made to pass, so CI stays green at every point in that sequence rather than
+# going red for the length of the whole pass. tests/ is out of `files`
+# entirely, not just ignored here -- see the "Decisions locked in" row this
+# slice adds to PLAN.md for why.
+[[tool.mypy.overrides]]
+module = "memgit.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = ["mcp.*", "anthropic.*", "uvicorn.*"]
+ignore_missing_imports = true
