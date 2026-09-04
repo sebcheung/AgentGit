@@ -149,8 +149,12 @@ class MemoryState:
     ) -> "MemoryState":
         """Return a new state holding only facts that pass every given test.
 
-        Slice 7's confidence-decay ranking hangs off ``min_confidence``; the
-        decay math itself is not this method's job, only the cutoff.
+        ``min_confidence`` compares *stored* confidence, not decayed
+        confidence — decay is a read-time lens applied by the retrieval
+        ranker (see ``core/decay.py``), and adding an ``as_of`` parameter
+        here would drag wall-clock time into an otherwise pure, offline
+        module. A caller that wants a decay-aware cutoff filters on
+        :meth:`~memgit.core.decay.DecayPolicy.decayed` itself.
         """
         kept = tuple(
             fact
