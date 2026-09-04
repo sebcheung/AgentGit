@@ -106,6 +106,18 @@ class AnthropicClient:
             )
         except anthropic.APIError as exc:
             raise AgentError(str(exc)) from exc
+        except TypeError as exc:
+            # The installed SDK validates credentials lazily, on the first
+            # request, not at `Anthropic()` construction time -- a missing
+            # key or token surfaces here as a bare TypeError from
+            # `_validate_headers`, not `anthropic.APIError`. Wrapping it
+            # keeps the "no API key configured" case a clean AgentError for
+            # every caller (cli.py's `_fail`, the API layer's 502 handler)
+            # instead of a raw traceback discovered only by actually trying
+            # to replay without one.
+            if "authentication method" not in str(exc).lower():
+                raise
+            raise AgentError(str(exc)) from exc
 
 
 def default_client(**kwargs: Any) -> AnthropicClient:
