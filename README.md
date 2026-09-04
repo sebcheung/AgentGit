@@ -256,6 +256,48 @@ tunneling it (`ngrok`, `cloudflared`) for a live demo means unauthenticated
 write access to memory for as long as the tunnel is open — close it when
 the demo ends. See PLAN.md's "Honest caveats."
 
+## CI for agent memory
+
+`memgit eval` asserts on what an agent's memory *is*, not on what it says —
+which fact holds at a key, what a commit's diff classified a key as, whether
+a query still retrieves the right belief. Every check reads
+`Repository.state`/`diff`/`retriever`, the same offline surface `memgit
+diff` already reads, so a suite needs no API key, no network, and produces
+the same result every run — which is what makes it a real CI gate rather
+than a demo:
+
+```sh
+$ memgit eval                 # 1 passed
+$ memgit ask "actually I moved to Berlin"
+$ memgit eval                 # 1 failed
+FAIL  knows-where-user-lives
+        expected user city == 'Boston', got ['Berlin']
+0/1 passed
+$ memgit eval --since HEAD~5  # which commit broke it
+FAIL  knows-where-user-lives  first broke at a1b2c3d4
+        expected user city == 'Boston', got ['Berlin']
+$ memgit diff a1b2c3d4
+! user  city    Boston -> Berlin
+```
+
+Cases live in `.memgit/eval/*.json` — repo-local and never committed into
+memory history, same reasoning as `cardinality.json`/`decay.json`: a suite is
+a question you ask, not data you store. This is deliberately *not* "reuse
+the replay engine as a regression check": `AblationResult.changed` compares
+two independent, sampled API replies, so its false-positive rate is the
+model's own sampling variance — honest for a command a human reads, useless
+as an automated gate. `memgit eval` asserts on memory instead, which is
+fully deterministic. See [PLAN.md](PLAN.md)'s "Decisions locked in" for the
+full reasoning, and its "Honest caveats" for what a green suite does *not*
+prove: an agent's memory not regressing is not the same claim as an agent
+still answering correctly.
+
+Drop the exit code into any CI:
+
+```yaml
+- run: uv run memgit eval
+```
+
 ## Quickstart
 
 ```sh
