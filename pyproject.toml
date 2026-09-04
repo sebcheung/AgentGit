@@ -71,3 +71,11 @@ convention = "google"
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["D", "S101", "ANN", "PLR2004", "E402"]
 "src/memgit/cli.py" = ["B008"]
+# FastAPI's `Depends(...)` in a parameter default is the framework's own
+# injection mechanism, the same "a default IS the API" case as cli.py's
+# typer.Option() above.
+"src/memgit/api/*.py" = ["B008"]
+# models.py's own module docstring states the convention directly: a model
+# gets a docstring only when there is something non-obvious to say about its
+# shape, not one echoing field names back as prose.
+"src/memgit/api/models.py" = ["D101"]

@@ -25,7 +25,6 @@ interleaving — so it is surfaced rather than retried forever.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 from memgit.agent.tools import (
@@ -38,7 +37,7 @@ from memgit.core.repository import Repository
 from memgit.core.staging import StagingConflictError
 from memgit.core.state import MemoryState
 
-__all__ = ["resolve_session_id", "staged_state", "remember", "forget", "seal"]
+__all__ = ["forget", "remember", "resolve_session_id", "seal", "staged_state"]
 
 
 def resolve_session_id(ctx: Any, *, process_session_id: str) -> str:
@@ -97,8 +96,9 @@ def forget(repo: Repository, session_id: str, call: ForgetCall) -> MemoryState:
 def seal(
     repo: Repository, session_id: str, message: str, *, author: str
 ) -> str | None:
-    """Seal ``session_id``'s staged writes into a commit; see
-    :meth:`~memgit.core.repository.Repository.seal_staging` for the overlay
-    semantics under a moved branch tip.
+    """Seal ``session_id``'s staged writes into a commit.
+
+    See :meth:`~memgit.core.repository.Repository.seal_staging` for the
+    overlay semantics under a moved branch tip.
     """
     return repo.seal_staging(session_id, message, author=author)

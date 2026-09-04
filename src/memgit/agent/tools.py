@@ -56,20 +56,20 @@ from memgit.core.fact import Fact, FactKey
 from memgit.core.state import MemoryState
 
 __all__ = [
-    "REMEMBER_SCHEMA",
     "FORGET_SCHEMA",
     "RECALL_SCHEMA",
+    "REMEMBER_SCHEMA",
     "TOOL_SCHEMAS",
     "WRITE_TOOL_SCHEMAS",
-    "RememberCall",
     "ForgetCall",
     "RecallCall",
+    "RememberCall",
     "ToolCallError",
-    "decode_remember",
+    "apply_forget",
+    "apply_remember",
     "decode_forget",
     "decode_recall",
-    "apply_remember",
-    "apply_forget",
+    "decode_remember",
     "tool_schemas",
 ]
 

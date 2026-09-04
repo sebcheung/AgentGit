@@ -40,16 +40,15 @@ owns four things:
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Mapping
+from datetime import UTC, datetime
+from typing import Any
 
 from memgit.agent.client import AgentError, LLMClient, default_client
 from memgit.agent.prompt import build_system_prompt
 from memgit.agent.tools import (
-    RecallCall,
     ToolCallError,
-    TOOL_SCHEMAS,
     apply_forget,
     apply_remember,
     decode_forget,
@@ -62,7 +61,7 @@ from memgit.core.repository import Repository
 from memgit.core.state import MemoryState
 from memgit.retrieval.rank import Retriever
 
-__all__ = ["MemoryAgent", "TurnResult", "ToolCallRecord", "AgentError", "run_tool_loop"]
+__all__ = ["AgentError", "MemoryAgent", "ToolCallRecord", "TurnResult", "run_tool_loop"]
 
 _MESSAGE_LIMIT = 72
 _DEFAULT_FULL_BELOW = 64
@@ -300,7 +299,7 @@ class MemoryAgent:
         full_below = self.repo.config().get("retrieval", {}).get("full_below", _DEFAULT_FULL_BELOW)
         retrieval_mode = len(before) >= full_below
         retriever = self.repo.retriever() if retrieval_mode else None
-        as_of = datetime.now(timezone.utc)
+        as_of = datetime.now(UTC)
         retrieved = retriever.retrieve(before, user_message, as_of=as_of) if retriever is not None else None
 
         system = build_system_prompt(before, cardinality, head=head, retrieved=retrieved)

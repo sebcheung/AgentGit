@@ -33,8 +33,7 @@ docs call out as silently reading as success (``is_error`` stays ``False``).
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
@@ -42,10 +41,14 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from memgit.agent.tools import ToolCallError, decode_forget, decode_recall, decode_remember
 from memgit.core.diff import ChangeKind, Diff
-from memgit.core.repository import EmptyCommitError, Repository, RevisionNotFoundError
+from memgit.core.repository import Repository, RevisionNotFoundError
 from memgit.mcp.session import (
     forget as fold_forget,
+)
+from memgit.mcp.session import (
     remember as fold_remember,
+)
+from memgit.mcp.session import (
     resolve_session_id,
     seal,
 )
@@ -190,7 +193,7 @@ def build_server(repo: Repository, *, name: str = "memgit") -> MCPServer:
             state,
             call.query,
             k=call.limit,
-            as_of=datetime.now(timezone.utc),
+            as_of=datetime.now(UTC),
             subjects={call.subject} if call.subject is not None else None,
         )
         return result.render()

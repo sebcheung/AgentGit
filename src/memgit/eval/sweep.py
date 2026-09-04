@@ -37,6 +37,7 @@ class FirstFailure:
     message: str
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize to the JSON-ready shape the CLI reports."""
         return {"case_id": self.case_id, "commit": self.commit, "message": self.message}
 
 

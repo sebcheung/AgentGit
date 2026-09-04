@@ -13,4 +13,4 @@ from __future__ import annotations
 from memgit.agent.client import AgentError
 from memgit.agent.runtime import MemoryAgent, ToolCallRecord, TurnResult
 
-__all__ = ["MemoryAgent", "TurnResult", "ToolCallRecord", "AgentError"]
+__all__ = ["AgentError", "MemoryAgent", "ToolCallRecord", "TurnResult"]

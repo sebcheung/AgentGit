@@ -76,7 +76,7 @@ def build_system_prompt(
     cardinality: CardinalityMap,
     *,
     head: str | None,
-    retrieved: "RetrievalResult | None" = None,
+    retrieved: RetrievalResult | None = None,
 ) -> list[dict[str, Any]]:
     """Build the system prompt for one turn — two blocks, or three under retrieval.
 

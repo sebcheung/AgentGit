@@ -37,7 +37,7 @@ hidden.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from memgit.agent.client import LLMClient, default_client
 from memgit.agent.prompt import build_system_prompt
@@ -48,7 +48,7 @@ from memgit.core.repository import Repository
 from memgit.core.state import MemoryState
 from memgit.retrieval.rank import RetrievalResult, Retriever
 
-__all__ = ["ReplayOutcome", "AblationResult", "replay_query", "ablate_and_replay"]
+__all__ = ["AblationResult", "ReplayOutcome", "ablate_and_replay", "replay_query"]
 
 _DEFAULT_FULL_BELOW = 64
 
@@ -203,7 +203,7 @@ def ablate_and_replay(
     cardinality = repo.cardinality()
     resolved_client = client if client is not None else default_client(model=model)
     label = f"{revision} ({resolved_hash[:8]})"
-    moment = as_of if as_of is not None else datetime.now(timezone.utc)
+    moment = as_of if as_of is not None else datetime.now(UTC)
 
     full_below = repo.config().get("retrieval", {}).get("full_below", _DEFAULT_FULL_BELOW)
     retrieval_mode = retrieve if retrieve is not None else len(state) >= full_below

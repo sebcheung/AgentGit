@@ -13,7 +13,7 @@ never requires the ``agent`` extra merely to import.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -30,7 +30,7 @@ def _parse_as_of(value: str) -> datetime:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"as_of must be ISO-8601, got {value!r}") from exc
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed
 
 
@@ -40,10 +40,9 @@ def replay(
     repo: Repository = Depends(get_repo),
     client=Depends(get_llm_client),
 ) -> ReplayResponse:
-    """Ablate ``(subject, predicate)`` at ``rev`` and replay ``query`` with
-    and without it. Never commits.
+    """Ablate ``(subject, predicate)`` at ``rev`` and replay ``query`` with and without it.
 
-    At most one replay runs per process at a time — two paid model calls
+    Never commits. At most one replay runs per process at a time — two paid model calls
     behind an unauthenticated button a demo audience can spam; see
     PLAN.md's "Replay's model and rate" decision row.
     """
