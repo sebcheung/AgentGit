@@ -57,9 +57,13 @@ target-version = "py312"
 # behavior change. E501 is off because nothing here wraps long lines for us.
 # D105/D107 are off because a dunder's contract is its name (`__len__` needs
 # no docstring saying "return the length") and a dataclass `__init__` is
-# already documented by its class docstring.
+# already documented by its class docstring. D417 is off because this
+# codebase's own convention (see e.g. `refs.py`'s `write_ref`) is to document
+# only the non-obvious parameters in an Args: section, not pad it out with
+# entries whose name already says everything -- exactly the "only comment on
+# the non-obvious" rule the rest of the code follows.
 select = ["E", "W", "F", "I", "UP", "B", "C4", "RUF", "D"]
-ignore = ["D203", "D213", "E501", "D105", "D107"]
+ignore = ["D203", "D213", "E501", "D105", "D107", "D417"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
