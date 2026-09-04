@@ -61,6 +61,10 @@ def get_llm_client(request: Request) -> LLMClient:
     from memgit.agent.client import AgentError, default_client
 
     try:
-        return default_client(model=request.app.state.model)
+        return default_client(
+            model=request.app.state.model,
+            max_retries=request.app.state.max_retries,
+            timeout=request.app.state.timeout,
+        )
     except AgentError as exc:
         raise LLMUnavailableError(str(exc)) from exc

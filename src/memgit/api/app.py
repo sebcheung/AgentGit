@@ -24,7 +24,14 @@ from memgit.core.repository import Repository
 __all__ = ["create_app"]
 
 
-def create_app(repo: Repository, *, model: str = "claude-opus-5", static: bool = True) -> FastAPI:
+def create_app(
+    repo: Repository,
+    *,
+    model: str = "claude-opus-5",
+    max_retries: int = 3,
+    timeout: float = 120.0,
+    static: bool = True,
+) -> FastAPI:
     """Build (but do not run) an app serving ``repo`` read-only, plus replay.
 
     Args:
@@ -35,12 +42,17 @@ def create_app(repo: Repository, *, model: str = "claude-opus-5", static: bool =
             PLAN.md's "Repository lifetime" decision row.
         model: The model ``POST /api/replay`` replays with. Server-side,
             never a request field.
+        max_retries: SDK-level retries ``deps.get_llm_client`` builds each
+            replay's client with.
+        timeout: Per-request timeout, in seconds, for the same client.
         static: Whether to mount the dashboard's static assets at ``/``.
             Tests that only exercise ``/api/*`` can skip it.
     """
     app = FastAPI(title="memgit", version=__version__)
     app.state.repo = repo
     app.state.model = model
+    app.state.max_retries = max_retries
+    app.state.timeout = timeout
 
     app.middleware("http")(request_id_middleware)
     register_exception_handlers(app)
