@@ -298,6 +298,40 @@ Drop the exit code into any CI:
 - run: uv run memgit eval
 ```
 
+## Dashboard and REST API
+
+`memgit serve-web` runs a read-only REST API and a small hand-written
+dashboard over this same repository — no React, no build step, plain
+HTML/CSS and ES-module JS served straight out of the package:
+
+```sh
+$ memgit serve-web
+memgit dashboard: http://127.0.0.1:8001
+```
+
+Open it and you get a commit graph (an inline SVG, one lane per branch,
+laid out in a single forward pass — no charting library), a diff viewer
+over whatever two commits you click, a memory-state browser, and the
+replay comparison from the section above as an actual button: click a
+fact in the diff or state view to populate `(subject, predicate)`, type a
+query, and get baseline vs. ablated side by side with a `changed` badge.
+
+The API underneath is exactly what the CLI already computes —
+`GET /api/log`, `/api/commits/{rev}`, `/api/state`, `/api/diff`,
+`/api/recall`, and `POST /api/replay` — with `Diff.to_dict()` and
+`MemoryState.to_dict()` passed straight through, byte-identical to
+`memgit diff --json` / `memgit state --json`. `/docs` gets you the full
+OpenAPI schema for free.
+
+**Read-only, plus replay — no auth in this slice.** Every route but one is
+a `GET`; `POST /api/replay` is the exception, and it's the one call in
+this project that structurally cannot write memory (`ablate_and_replay`
+never calls `Repository.commit`). Requires the `web` extra
+(`pip install memgit[web]`, or `uv sync --extra web`). Same posture as the
+MCP server's own caveat above: binds to loopback by default, and an
+unauthenticated replay button is a paid button — see PLAN.md's "Honest
+caveats" for both gaps stated plainly, closed together in slice 11.
+
 ## Quickstart
 
 ```sh
