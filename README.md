@@ -1,5 +1,7 @@
 # MemGit
 
+[![test](https://github.com/sebcheung/AgentGit/actions/workflows/test.yml/badge.svg)](https://github.com/sebcheung/AgentGit/actions/workflows/test.yml)
+
 Version control and time-travel debugging for AI agent memory — snapshot,
 branch, diff, checkout, and rewind what an agent "believed" over time, so you
 can causally explain *why* it behaved the way it did. See [PLAN.md](PLAN.md)
