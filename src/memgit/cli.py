@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any, cast
 import typer
 
 if TYPE_CHECKING:
+    from sqlalchemy import Engine
+
     from memgit.agent.runtime import MemoryAgent, TurnResult
 
 from memgit import __version__
@@ -1434,6 +1436,74 @@ def serve_web_cmd(
     web_app = create_app(repo, model=model, max_retries=max_retries, timeout=timeout, api_key=resolved_key)
     typer.echo(f"memgit dashboard: http://{host}:{port}", err=True)
     uvicorn.run(web_app, host=host, port=port)
+
+
+def _pg_engine_or_fail() -> Engine:
+    """Build the projection's engine, or ``_fail`` with an install/setup hint.
+
+    ``memgit project``/``blame``/``stats`` are the only commands that ever
+    call this — every other command keeps working with no database
+    configured at all.
+    """
+    try:
+        from memgit.pg.engine import MissingDatabaseUrlError, engine_from_env
+    except ImportError:
+        _fail("the 'pg' extra is required: pip install memgit[pg] (or `uv sync --extra pg`)")
+        raise  # unreachable
+    try:
+        return engine_from_env()
+    except MissingDatabaseUrlError as exc:
+        _fail(str(exc))
+        raise  # unreachable
+
+
+@app.command("project")
+def project_cmd() -> None:
+    """Sync the Postgres projection with this repository.
+
+    Walks every commit reachable from every branch tip and upserts what's
+    new — see `src/memgit/pg/project.py`. Idempotent: rerunning on an
+    unmoved repository does no work. Needs the `pg` extra and
+    `$DATABASE_URL` (or `docker compose up db`).
+    """
+    from memgit.pg.project import project as run_projection
+
+    engine = _pg_engine_or_fail()
+    result = run_projection(_repo(), engine)
+    typer.echo(f"{result.commits_added} commit(s), {result.facts_added} fact(s) added")
+
+
+@app.command("blame")
+def blame_cmd(
+    subject: str = typer.Argument(..., help="Subject of the key to blame."),
+    predicate: str = typer.Argument(..., help="Predicate of the key to blame."),
+) -> None:
+    """Every commit that touched (SUBJECT, PREDICATE), oldest first.
+
+    Reads the Postgres projection — run `memgit project` first to sync it;
+    this command never reads the object store directly.
+    """
+    from memgit.pg.queries import blame as run_blame
+
+    engine = _pg_engine_or_fail()
+    entries = run_blame(engine, subject, predicate)
+    if not entries:
+        typer.echo(f"no history for {subject} {predicate} -- run `memgit project` if this looks stale")
+        return
+    for entry in entries:
+        typer.echo(f"{entry.committed_at}\t{entry.commit_hash[:8]}\t{entry.op}{entry.fact_hash[:8]}")
+
+
+@app.command("stats")
+def stats_cmd() -> None:
+    """Storage stats from the Postgres projection: dedup ratio, fact and tree-entry counts."""
+    from memgit.pg.queries import dedup_stats
+
+    engine = _pg_engine_or_fail()
+    stats = dedup_stats(engine)
+    plural = "y" if stats.total_tree_entries == 1 else "ies"
+    typer.echo(f"{stats.distinct_facts} distinct fact(s), {stats.total_tree_entries} tree entr{plural}")
+    typer.echo(f"dedup ratio: {stats.ratio:.2f}x")
 
 
 if __name__ == "__main__":
