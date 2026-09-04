@@ -504,3 +504,56 @@ class TestCardinality:
         runner.invoke(app, ["init"])
         result = runner.invoke(app, ["cardinality", "set", "likes", "several"])
         assert result.exit_code == 1
+
+
+class TestDecay:
+    def test_lists_default_with_no_declarations(self, tmp_path):
+        runner.invoke(app, ["init"])
+        result = runner.invoke(app, ["decay"])
+        assert result.exit_code == 0
+        assert "default: 180.0 day(s)" in result.output
+
+    def test_set_then_get_round_trips(self, tmp_path):
+        runner.invoke(app, ["init"])
+        set_result = runner.invoke(app, ["decay", "set", "prefers_language", "30"])
+        assert set_result.exit_code == 0
+        listing = runner.invoke(app, ["decay"])
+        assert "prefers_language\t30.0" in listing.output
+
+    def test_set_never_exempts_a_predicate(self, tmp_path):
+        runner.invoke(app, ["init"])
+        runner.invoke(app, ["decay", "set", "born_in", "never"])
+        listing = runner.invoke(app, ["decay"])
+        assert "born_in\tnever" in listing.output
+
+    def test_unset_reverts(self, tmp_path):
+        runner.invoke(app, ["init"])
+        runner.invoke(app, ["decay", "set", "likes", "30"])
+        result = runner.invoke(app, ["decay", "unset", "likes"])
+        assert result.exit_code == 0
+        listing = runner.invoke(app, ["decay"])
+        assert "likes" not in listing.output
+
+    def test_set_bad_value_fails(self, tmp_path):
+        runner.invoke(app, ["init"])
+        result = runner.invoke(app, ["decay", "set", "likes", "not-a-number"])
+        assert result.exit_code == 1
+
+    def test_state_as_of_shows_decayed_confidence(self, tmp_path):
+        _init_and_commit(tmp_path)
+        runner.invoke(app, ["decay", "set", "prefers_language", "1"])
+        result = runner.invoke(app, ["state", "--as-of", "2027-09-01T00:00:00+00:00"])
+        assert result.exit_code == 0
+        assert "as of" in result.output
+
+    def test_state_json_as_of_includes_decayed_confidence(self, tmp_path):
+        _init_and_commit(tmp_path)
+        result = runner.invoke(app, ["state", "--as-of", "2026-09-01T00:00:00+00:00", "--json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert "decayed_confidence" in payload["facts"][0]
+
+    def test_state_as_of_bad_timestamp_fails(self, tmp_path):
+        _init_and_commit(tmp_path)
+        result = runner.invoke(app, ["state", "--as-of", "not-a-timestamp"])
+        assert result.exit_code == 1

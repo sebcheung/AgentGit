@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from memgit.core.cardinality import CardinalityMap
+from memgit.core.decay import DecayPolicy
 from memgit.core.diff import ChangeKind
 from memgit.core.fact import Fact
 from memgit.core.repository import (
@@ -307,6 +308,28 @@ class TestCardinality:
         (repo.memgit_dir / "cardinality.json").write_text("{not json", encoding="utf-8")
         with pytest.raises(ValueError):
             repo.cardinality()
+
+
+class TestDecay:
+    def test_defaults_when_the_file_is_absent(self, repo):
+        assert repo.decay() == DecayPolicy.default_map()
+
+    def test_set_then_get_round_trips(self, repo):
+        repo.set_decay(DecayPolicy({"likes": 30.0}))
+        assert repo.decay() == DecayPolicy({"likes": 30.0})
+
+    def test_set_writes_atomically_no_lock_left_behind(self, repo):
+        repo.set_decay(DecayPolicy({"likes": 30.0}))
+        assert not (repo.memgit_dir / "decay.json.lock").exists()
+        assert (repo.memgit_dir / "decay.json").is_file()
+
+    def test_malformed_file_raises_clearly(self, repo):
+        (repo.memgit_dir / "decay.json").write_text("{not json", encoding="utf-8")
+        with pytest.raises(ValueError):
+            repo.decay()
+
+    def test_init_does_not_create_a_decay_file(self, repo):
+        assert not (repo.memgit_dir / "decay.json").exists()
 
 
 class TestDiff:

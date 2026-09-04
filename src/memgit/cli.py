@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ import typer
 
 from memgit import __version__
 from memgit.core.commit import Commit
+from memgit.core.decay import DecayPolicy
 from memgit.core.diff import ChangeKind, Diff
 from memgit.core.fact import Fact
 from memgit.core.graph import ancestors, is_ancestor, walk
@@ -55,6 +57,26 @@ def main(
 def _fail(message: str) -> None:
     typer.secho(message, fg=typer.colors.RED, err=True)
     raise typer.Exit(code=1)
+
+
+def _parse_as_of(value: str | None) -> datetime:
+    """Parse an ``--as-of`` flag, defaulting to now.
+
+    The CLI is the one place allowed to read the wall clock for decay — every
+    call into ``core.decay`` or ``retrieval`` takes ``as_of`` explicitly, so
+    a decay-aware command stays reproducible everywhere except at the exact
+    point a human asked "what does it look like right now."
+    """
+    if value is None:
+        return datetime.now(timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        _fail(f"--as-of must be ISO-8601, got {value!r}")
+        raise  # unreachable; _fail always raises
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _repo() -> Repository:
@@ -559,12 +581,18 @@ def state_cmd(
     render: bool = typer.Option(
         False, "--render", help="Print the context-block rendering instead of a listing."
     ),
+    as_of: str = typer.Option(
+        None, "--as-of", help="Show decayed confidence as of this ISO-8601 timestamp (default: now)."
+    ),
     as_json: bool = typer.Option(False, "--json", help="Machine-readable output."),
 ) -> None:
     """Show what the agent believed at REV — the time-travel command.
 
     Distinct from ``memgit show --facts``: that is commit-centric and
-    unfiltered, this is state-centric and filterable.
+    unfiltered, this is state-centric and filterable. ``--as-of`` adds a
+    decayed-confidence column without ever touching stored confidence —
+    decay is purely a display lens here, the same as it is for retrieval
+    ranking (see ``core/decay.py``).
     """
     repo = _repo()
     try:
@@ -583,13 +611,26 @@ def state_cmd(
             predicates={predicate} if predicate is not None else None,
         )
 
+    decay_moment = _parse_as_of(as_of) if as_of is not None else None
+
     if as_json:
-        typer.echo(json.dumps(memory.to_dict(), indent=2, ensure_ascii=False))
+        payload = memory.to_dict()
+        if decay_moment is not None:
+            policy = repo.decay()
+            payload["as_of"] = decay_moment.isoformat()
+            for fact_payload, fact in zip(payload["facts"], memory.facts):
+                fact_payload["decayed_confidence"] = policy.decayed(fact, as_of=decay_moment)
+        typer.echo(json.dumps(payload, indent=2, ensure_ascii=False))
     elif render:
         typer.echo(memory.render())
     else:
+        policy = repo.decay() if decay_moment is not None else None
         for fact in sorted(memory.facts, key=lambda f: (f.subject, f.predicate, f.object)):
-            typer.echo(f"  {fact}")
+            if policy is not None:
+                decayed = policy.decayed(fact, as_of=decay_moment)
+                typer.echo(f"  {fact}  [as of {as_of or 'now'}: {decayed:.2f}]")
+            else:
+                typer.echo(f"  {fact}")
 
 
 @app.command("status")
@@ -948,6 +989,48 @@ def cardinality_unset_cmd(
     """Remove PREDICATE's declaration, reverting it to the map's default."""
     repo = _repo()
     repo.set_cardinality(repo.cardinality().without_predicate(predicate))
+
+
+decay_app = typer.Typer(help="Inspect and edit temporal confidence decay half-lives.")
+app.add_typer(decay_app, name="decay")
+
+
+@decay_app.callback(invoke_without_command=True)
+def decay_main(ctx: typer.Context) -> None:
+    """List declared half-lives and the effective default. Mirrors bare ``memgit decay``."""
+    if ctx.invoked_subcommand is not None:
+        return
+    policy = _repo().decay()
+    typer.echo(f"default: {policy.default if policy.default is not None else 'never'} day(s)")
+    for predicate, half_life in policy.declared():
+        typer.echo(f"{predicate}\t{half_life if half_life is not None else 'never'}")
+
+
+@decay_app.command("set")
+def decay_set_cmd(
+    predicate: str = typer.Argument(..., help="Predicate to declare a half-life for."),
+    half_life: str = typer.Argument(..., help="Half-life in days, or 'never'."),
+) -> None:
+    """Declare PREDICATE's half-life, in days, or 'never' to exempt it from decay."""
+    repo = _repo()
+    if half_life == "never":
+        days: float | None = None
+    else:
+        try:
+            days = float(half_life)
+        except ValueError:
+            _fail(f"half-life must be a number of days or 'never', got {half_life!r}")
+            return
+    repo.set_decay(repo.decay().with_half_life(predicate, days))
+
+
+@decay_app.command("unset")
+def decay_unset_cmd(
+    predicate: str = typer.Argument(..., help="Predicate to remove the declaration for."),
+) -> None:
+    """Remove PREDICATE's declaration, reverting it to the policy's default."""
+    repo = _repo()
+    repo.set_decay(repo.decay().without_half_life(predicate))
 
 
 if __name__ == "__main__":

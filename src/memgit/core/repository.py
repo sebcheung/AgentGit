@@ -62,6 +62,7 @@ from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from memgit.core.cardinality import CardinalityMap
 from memgit.core.commit import Commit
+from memgit.core.decay import DecayPolicy
 from memgit.core.diff import Diff, diff_trees
 from memgit.core.fact import Fact, FactKey
 from memgit.core.graph import merge_base, walk
@@ -112,6 +113,7 @@ class CheckoutResult:
 _CONFIG_NAME = "config"
 _HEAD_NAME = "HEAD"
 _CARDINALITY_NAME = "cardinality.json"
+_DECAY_NAME = "decay.json"
 
 
 class NotARepositoryError(Exception):
@@ -382,6 +384,27 @@ class Repository:
         path = self.memgit_dir / _CARDINALITY_NAME
         lock = path.with_name(path.name + ".lock")
         lock.write_text(json.dumps(mapping.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        lock.replace(path)
+
+    # -- decay -----------------------------------------------------------
+
+    def decay(self) -> DecayPolicy:
+        """This repository's decay policy — how confidence fades between commits.
+
+        Repo-local and uncommitted, for the same reason as :meth:`cardinality`:
+        see ``decay.py``'s module docstring. A missing file is a normal
+        state, matching :meth:`cardinality`.
+        """
+        path = self.memgit_dir / _DECAY_NAME
+        if not path.is_file():
+            return DecayPolicy.default_map()
+        return DecayPolicy.from_dict(json.loads(path.read_text(encoding="utf-8")))
+
+    def set_decay(self, policy: DecayPolicy) -> None:
+        """Overwrite the decay policy, atomically."""
+        path = self.memgit_dir / _DECAY_NAME
+        lock = path.with_name(path.name + ".lock")
+        lock.write_text(json.dumps(policy.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
         lock.replace(path)
 
     # -- diff ------------------------------------------------------------
