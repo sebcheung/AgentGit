@@ -1,0 +1,92 @@
+# `docker compose up` -- the whole stack, one command, fully local, $0. See
+# PLAN.md's "Scope discipline" for why this replaces a hosted deployment.
+#
+# api and mcp both bind 0.0.0.0 inside this network, which is exactly the
+# non-loopback case memgit.keyauth's off-loopback guard exists for -- so
+# MEMGIT_API_KEY is required here, not optional, and both services refuse
+# to start without it (see .env.example).
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: memgit
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env -- see .env.example}
+      POSTGRES_DB: memgit
+    volumes:
+      - memgit-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memgit -d memgit"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # A one-shot job, not a long-running service: applies every migration and
+  # exits. api/mcp depend on it completing successfully, not on the
+  # container staying up, so `docker compose up` naturally serializes
+  # "schema exists" before "something reads it."
+  migrate:
+    build: .
+    working_dir: /app
+    entrypoint: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://memgit:${POSTGRES_PASSWORD}@db/memgit
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Also one-shot: `api` and `mcp` share the `memgit-data` volume, and both
+  # images' entrypoint.sh independently checks "does .memgit exist yet?" --
+  # with no service serializing them, both containers can pass that check
+  # before either one finishes `memgit init`, and the loser crashes on
+  # `RepositoryExistsError`. Giving init its own service, with api/mcp both
+  # depending on it, makes "the repository exists" happen-before "something
+  # tries to open it" instead of a check-then-act race between two
+  # containers on one volume.
+  init:
+    build: .
+    entrypoint: ["/app/docker/entrypoint.sh", "--version"]
+    volumes:
+      - memgit-data:/data
+
+  api:
+    build: .
+    command: ["serve-web", "--host", "0.0.0.0"]
+    ports:
+      - "8001:8001"
+    environment:
+      DATABASE_URL: postgresql+psycopg://memgit:${POSTGRES_PASSWORD}@db/memgit
+      MEMGIT_API_KEY: ${MEMGIT_API_KEY:?set MEMGIT_API_KEY in .env -- see .env.example}
+    volumes:
+      - memgit-data:/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      init:
+        condition: service_completed_successfully
+
+  mcp:
+    build: .
+    command: ["serve", "--transport", "streamable-http", "--host", "0.0.0.0"]
+    ports:
+      - "8000:8000"
+    environment:
+      MEMGIT_API_KEY: ${MEMGIT_API_KEY:?set MEMGIT_API_KEY in .env -- see .env.example}
+    volumes:
+      - memgit-data:/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      init:
+        condition: service_completed_successfully
+    # Streamable-HTTP has no /api/ready of its own (that's the REST API's
+    # endpoint, not MCP's), and this project has no MCP-native health tool
+    # to poll instead -- a real, deliberately-uncorrected gap, not an
+    # oversight: `docker compose ps` still shows this container's process
+    # state even with its healthcheck disabled.
+    healthcheck:
+      disable: true
+
+volumes:
+  memgit-db:
+  memgit-data:
