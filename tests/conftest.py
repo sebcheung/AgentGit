@@ -113,3 +113,13 @@ class ScriptedClient:
 @pytest.fixture
 def agent_repo(tmp_path) -> Repository:
     return Repository.init(tmp_path)
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    """Pins the ``mcp.Client`` in-memory transport's tests to asyncio.
+
+    Required by ``pytest.mark.anyio`` tests (``test_mcp_server.py``); harmless
+    for every other test, which never requests this fixture.
+    """
+    return "asyncio"
