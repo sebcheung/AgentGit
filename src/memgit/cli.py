@@ -58,8 +58,13 @@ def main(
         callback=_version_callback,
         is_eager=True,
     ),
+    log_level: str = typer.Option("WARNING", "--log-level", help="DEBUG/INFO/WARNING/ERROR."),
+    log_json: bool = typer.Option(False, "--log-json", help="Render log lines as JSON."),
 ) -> None:
     """MemGit — git for what your agent believes."""
+    from memgit.logging_config import configure_logging
+
+    configure_logging(log_level, json_output=log_json)
 
 
 def _fail(message: str) -> None:

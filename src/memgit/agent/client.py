@@ -25,12 +25,16 @@ verified against the installed SDK — so nothing is lost by keeping it.
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from anthropic.types import Message
 
 __all__ = ["AgentError", "AnthropicClient", "LLMClient", "default_client"]
+
+logger = logging.getLogger("memgit.agent")
 
 
 class AgentError(Exception):
@@ -102,8 +106,10 @@ class AnthropicClient:
         """See :meth:`LLMClient.create_message`."""
         import anthropic
 
+        logger.info("agent.request", extra={"model": self._model, "max_tokens": self._max_tokens})
+        start = time.perf_counter()
         try:
-            return self._client.messages.create(
+            message = self._client.messages.create(
                 model=self._model,
                 max_tokens=self._max_tokens,
                 system=system,
@@ -113,6 +119,7 @@ class AnthropicClient:
                 output_config={"effort": "high"},
             )
         except anthropic.APIError as exc:
+            logger.warning("agent.error", extra={"model": self._model, "error": str(exc)})
             raise AgentError(str(exc)) from exc
         except TypeError as exc:
             # The installed SDK validates credentials lazily, on the first
@@ -125,7 +132,21 @@ class AnthropicClient:
             # to replay without one.
             if "authentication method" not in str(exc).lower():
                 raise
+            logger.warning("agent.error", extra={"model": self._model, "error": str(exc)})
             raise AgentError(str(exc)) from exc
+
+        duration_ms = (time.perf_counter() - start) * 1000
+        logger.info(
+            "agent.response",
+            extra={
+                "model": self._model,
+                "duration_ms": round(duration_ms, 2),
+                "stop_reason": message.stop_reason,
+                "input_tokens": message.usage.input_tokens,
+                "output_tokens": message.usage.output_tokens,
+            },
+        )
+        return message
 
 
 def default_client(**kwargs: Any) -> AnthropicClient:

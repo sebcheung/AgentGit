@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from memgit import __version__
 from memgit.api.errors import register_exception_handlers
+from memgit.api.middleware import request_id_middleware
 from memgit.api.read import router as read_router
 from memgit.api.replay import router as replay_router
 from memgit.core.repository import Repository
@@ -41,6 +42,7 @@ def create_app(repo: Repository, *, model: str = "claude-opus-5", static: bool =
     app.state.repo = repo
     app.state.model = model
 
+    app.middleware("http")(request_id_middleware)
     register_exception_handlers(app)
     app.include_router(read_router, prefix="/api")
     app.include_router(replay_router, prefix="/api")
