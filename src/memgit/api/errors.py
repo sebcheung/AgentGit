@@ -24,7 +24,17 @@ from fastapi.responses import JSONResponse
 from memgit.core.repository import NotARepositoryError, RevisionNotFoundError
 from memgit.core.store import CorruptObjectError, ObjectNotFoundError
 
-__all__ = ["LLMUnavailableError", "register_exception_handlers"]
+__all__ = ["LLMUnavailableError", "UnauthorizedError", "register_exception_handlers"]
+
+
+class UnauthorizedError(Exception):
+    """Raised by :func:`memgit.api.deps.require_api_key` when a key is configured but not (correctly) presented.
+
+    A 401, mapped here rather than raised as an ``HTTPException`` directly,
+    so it renders through the same ``{"error", "detail"}`` envelope every
+    other mapped exception does instead of FastAPI's default ``{"detail"}``
+    shape.
+    """
 
 
 class LLMUnavailableError(Exception):
@@ -66,6 +76,10 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(LLMUnavailableError)
     async def _llm_unavailable(request: Request, exc: LLMUnavailableError) -> JSONResponse:
         return _error(503, "llm_unavailable", str(exc))
+
+    @app.exception_handler(UnauthorizedError)
+    async def _unauthorized(request: Request, exc: UnauthorizedError) -> JSONResponse:
+        return _error(401, "unauthorized", "missing or invalid API key")
 
     # Imported lazily so this module -- and therefore `memgit.api.app` --
     # never pulls in `memgit.agent` at import time. The class itself has no
