@@ -1,5 +1,56 @@
 <!DOCTYPE html>
 <html lang="en">
-<head><meta charset="utf-8"><title>memgit</title></head>
-<body><p>memgit dashboard — coming in a later commit.</p></body>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>memgit</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <h1>memgit</h1>
+    <span class="field" id="field-root"></span>
+    <span class="field" id="field-branch"></span>
+    <span class="field" id="field-head"></span>
+  </header>
+  <main>
+    <section class="pane" id="graph-pane">
+      <svg id="graph-svg"></svg>
+    </section>
+    <section class="pane" id="side-pane">
+      <div class="tabs">
+        <button id="tab-diff" class="active" type="button">Diff</button>
+        <button id="tab-state" type="button">State</button>
+      </div>
+      <div id="tab-content"></div>
+
+      <form class="replay" id="replay-form">
+        <div class="full"><strong>Replay comparison</strong></div>
+        <div class="full">
+          <label for="replay-rev">Revision</label>
+          <input id="replay-rev" name="rev" type="text" value="HEAD" required>
+        </div>
+        <div>
+          <label for="replay-subject">Subject</label>
+          <input id="replay-subject" name="subject" type="text" required>
+        </div>
+        <div>
+          <label for="replay-predicate">Predicate</label>
+          <input id="replay-predicate" name="predicate" type="text" required>
+        </div>
+        <div class="full">
+          <label for="replay-fact-hash">Fact hash (optional -- ablates only this value)</label>
+          <input id="replay-fact-hash" name="fact_hash" type="text">
+        </div>
+        <div class="full">
+          <label for="replay-query">Query</label>
+          <textarea id="replay-query" name="query" rows="2" required></textarea>
+        </div>
+        <button type="submit" id="replay-submit">Run replay comparison</button>
+      </form>
+      <div class="replay-result" id="replay-result"></div>
+    </section>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
 </html>
