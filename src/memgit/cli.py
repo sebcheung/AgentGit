@@ -1336,5 +1336,31 @@ def serve_cmd(
     run_mcp_server(_repo(), transport=transport, host=host, port=port)
 
 
+@app.command("serve-web")
+def serve_web_cmd(
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address."),
+    port: int = typer.Option(8001, "--port", help="Bind port."),
+    model: str = typer.Option("claude-opus-5", "--model", help="Model the replay panel replays with."),
+) -> None:
+    """Run the dashboard and REST API over this repository (slice 10).
+
+    Read-only, plus a replay comparison -- see `src/memgit/api/` for the
+    full argument. Requires the `web` extra (``pip install memgit[web]``).
+    Defaults to port 8001, distinct from `memgit serve --transport
+    streamable-http`'s 8000, since a live demo plausibly runs both.
+    """
+    try:
+        from memgit.api.app import create_app
+        import uvicorn
+    except ImportError:
+        _fail("the 'web' extra is required: pip install memgit[web] (or `uv sync --extra web`)")
+        return
+
+    repo = _repo()
+    web_app = create_app(repo, model=model)
+    typer.echo(f"memgit dashboard: http://{host}:{port}", err=True)
+    uvicorn.run(web_app, host=host, port=port)
+
+
 if __name__ == "__main__":
     app()
