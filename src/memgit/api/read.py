@@ -19,14 +19,12 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from memgit import __version__
 from memgit.api.deps import get_repo, retrieval_lock
 from memgit.api.models import (
     CommitDetail,
     CommitNode,
     DiffResponse,
     HeadModel,
-    HealthResponse,
     LogResponse,
     RecalledFact,
     RecallResponse,
@@ -76,12 +74,6 @@ def _commit_node(commit_hash: str, commit: Commit) -> CommitNode:
         is_root=commit.is_root,
         is_merge=commit.is_merge,
     )
-
-
-@router.get("/health", response_model=HealthResponse)
-def health() -> HealthResponse:
-    """Liveness only — no repository probe. See PLAN.md's ``/health`` row."""
-    return HealthResponse(status="ok", version=__version__)
 
 
 @router.get("/repo", response_model=RepoResponse)
