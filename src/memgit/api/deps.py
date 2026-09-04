@@ -13,13 +13,14 @@ from typing import TYPE_CHECKING
 
 from fastapi import Request
 
-from memgit.api.errors import LLMUnavailableError
+from memgit.api.errors import LLMUnavailableError, UnauthorizedError
 from memgit.core.repository import Repository
+from memgit.keyauth import check, extract_presented
 
 if TYPE_CHECKING:
     from memgit.agent.client import LLMClient
 
-__all__ = ["get_llm_client", "get_repo", "replay_semaphore", "retrieval_lock"]
+__all__ = ["get_llm_client", "get_repo", "replay_semaphore", "require_api_key", "retrieval_lock"]
 
 # `VectorIndex` (retrieval/index.py) is single-writer by construction: a
 # cache-miss write appends to `vectors.pack`, then read-modify-writes
@@ -42,6 +43,22 @@ replay_semaphore = threading.Semaphore(1)
 def get_repo(request: Request) -> Repository:
     """The repository this app was built with — see ``app.create_app``."""
     return request.app.state.repo
+
+
+def require_api_key(request: Request) -> None:
+    """401 unless the request presents the server's configured key.
+
+    A no-op when the server was built with no key — the loopback-dev
+    default every route's existing test already exercises unauthenticated.
+    Applied per-router in ``app.create_app``, never globally, since
+    ``/api/health`` (see ``health.py``) must answer even with a key
+    configured and none presented.
+    """
+    key = request.app.state.api_key
+    if key is None:
+        return
+    if not check(extract_presented(request.headers), key):
+        raise UnauthorizedError()
 
 
 def get_llm_client(request: Request) -> LLMClient:

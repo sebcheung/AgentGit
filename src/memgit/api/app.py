@@ -11,11 +11,13 @@ from __future__ import annotations
 
 from importlib import resources
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from memgit import __version__
+from memgit.api.deps import require_api_key
 from memgit.api.errors import register_exception_handlers
+from memgit.api.health import router as health_router
 from memgit.api.middleware import request_id_middleware
 from memgit.api.read import router as read_router
 from memgit.api.replay import router as replay_router
@@ -30,6 +32,7 @@ def create_app(
     model: str = "claude-opus-5",
     max_retries: int = 3,
     timeout: float = 120.0,
+    api_key: str | None = None,
     static: bool = True,
 ) -> FastAPI:
     """Build (but do not run) an app serving ``repo`` read-only, plus replay.
@@ -45,6 +48,10 @@ def create_app(
         max_retries: SDK-level retries ``deps.get_llm_client`` builds each
             replay's client with.
         timeout: Per-request timeout, in seconds, for the same client.
+        api_key: Required on every ``/api/*`` route except ``/api/health``
+            when set; every route is unauthenticated when ``None`` (the
+            loopback-dev default). See ``memgit.keyauth`` and
+            ``deps.require_api_key``.
         static: Whether to mount the dashboard's static assets at ``/``.
             Tests that only exercise ``/api/*`` can skip it.
     """
@@ -53,11 +60,13 @@ def create_app(
     app.state.model = model
     app.state.max_retries = max_retries
     app.state.timeout = timeout
+    app.state.api_key = api_key
 
     app.middleware("http")(request_id_middleware)
     register_exception_handlers(app)
-    app.include_router(read_router, prefix="/api")
-    app.include_router(replay_router, prefix="/api")
+    app.include_router(health_router, prefix="/api")
+    app.include_router(read_router, prefix="/api", dependencies=[Depends(require_api_key)])
+    app.include_router(replay_router, prefix="/api", dependencies=[Depends(require_api_key)])
 
     if static:
         # `/api/*` is registered above, before this mount -- a Starlette
