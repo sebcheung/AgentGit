@@ -66,10 +66,84 @@ class TestServeWeb:
         monkeypatch.setitem(__import__("sys").modules, "uvicorn", _FakeUvicorn)
 
         result = runner.invoke(
-            app, ["serve-web", "--host", "0.0.0.0", "--port", "9999", "--model", "claude-fable-5-1"]
+            app,
+            [
+                "serve-web",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "9999",
+                "--model",
+                "claude-fable-5-1",
+                "--insecure",
+            ],
         )
 
         assert result.exit_code == 0, result.output
         assert calls["host"] == "0.0.0.0"
         assert calls["port"] == 9999
         assert calls["web_app"].state.model == "claude-fable-5-1"
+
+    def test_refuses_non_loopback_host_with_no_api_key(self, tmp_path):
+        _seed_repo(tmp_path)
+        result = runner.invoke(app, ["serve-web", "--host", "0.0.0.0"])
+        assert result.exit_code != 0
+        assert "refusing to bind" in result.output
+
+    def test_insecure_allows_non_loopback_host_with_a_warning(self, tmp_path, monkeypatch):
+        _seed_repo(tmp_path)
+
+        class _FakeUvicorn:
+            @staticmethod
+            def run(web_app, *, host, port):
+                pass
+
+        monkeypatch.setitem(__import__("sys").modules, "uvicorn", _FakeUvicorn)
+
+        result = runner.invoke(app, ["serve-web", "--host", "0.0.0.0", "--insecure"])
+        assert result.exit_code == 0, result.output
+        assert "WARNING" in result.output
+
+    def test_api_key_flag_reaches_the_app_state(self, tmp_path, monkeypatch):
+        _seed_repo(tmp_path)
+        calls = {}
+
+        class _FakeUvicorn:
+            @staticmethod
+            def run(web_app, *, host, port):
+                calls["web_app"] = web_app
+
+        monkeypatch.setitem(__import__("sys").modules, "uvicorn", _FakeUvicorn)
+
+        result = runner.invoke(app, ["serve-web", "--api-key", "secret"])
+        assert result.exit_code == 0, result.output
+        assert calls["web_app"].state.api_key == "secret"
+
+    def test_env_var_is_used_when_no_flag_given(self, tmp_path, monkeypatch):
+        _seed_repo(tmp_path)
+        monkeypatch.setenv("MEMGIT_API_KEY", "from-env")
+        calls = {}
+
+        class _FakeUvicorn:
+            @staticmethod
+            def run(web_app, *, host, port):
+                calls["web_app"] = web_app
+
+        monkeypatch.setitem(__import__("sys").modules, "uvicorn", _FakeUvicorn)
+
+        result = runner.invoke(app, ["serve-web"])
+        assert result.exit_code == 0, result.output
+        assert calls["web_app"].state.api_key == "from-env"
+
+    def test_a_configured_key_permits_a_non_loopback_bind(self, tmp_path, monkeypatch):
+        _seed_repo(tmp_path)
+
+        class _FakeUvicorn:
+            @staticmethod
+            def run(web_app, *, host, port):
+                pass
+
+        monkeypatch.setitem(__import__("sys").modules, "uvicorn", _FakeUvicorn)
+
+        result = runner.invoke(app, ["serve-web", "--host", "0.0.0.0", "--api-key", "secret"])
+        assert result.exit_code == 0, result.output

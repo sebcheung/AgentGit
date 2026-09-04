@@ -67,6 +67,35 @@ def main(
     configure_logging(log_level, json_output=log_json)
 
 
+def _resolve_api_key_or_fail(api_key: str | None, host: str, *, insecure: bool) -> str | None:
+    """Resolve the server's API key, refusing to bind an unreachable-by-key host.
+
+    Unauthenticated is allowed only when the server cannot be reached from
+    outside the machine it runs on (see ``memgit.keyauth``'s module
+    docstring). ``--insecure`` is the explicit, loud escape hatch for a
+    tunneled demo (``ngrok``/``cloudflared``) — it does not silence the
+    warning, it just lets the bind proceed.
+    """
+    from memgit.keyauth import is_loopback, resolve_key
+
+    key = resolve_key(api_key)
+    if key is not None or is_loopback(host):
+        return key
+    if not insecure:
+        _fail(
+            f"refusing to bind {host!r} with no API key configured -- "
+            "set --api-key, $MEMGIT_API_KEY, or pass --insecure to bind anyway"
+        )
+        return None
+    typer.secho(
+        f"WARNING: serving on {host!r} with no API key configured -- anyone who can reach "
+        "this host can read (and, via replay, spend money on) this repository's memory",
+        fg=typer.colors.RED,
+        err=True,
+    )
+    return key
+
+
 def _fail(message: str) -> None:
     typer.secho(message, fg=typer.colors.RED, err=True)
     raise typer.Exit(code=1)
@@ -1360,6 +1389,12 @@ def serve_web_cmd(
     model: str = typer.Option("claude-opus-5", "--model", help="Model the replay panel replays with."),
     max_retries: int = typer.Option(3, "--max-retries", help="SDK-level retries on 408/409/429/5xx."),
     timeout: float = typer.Option(120.0, "--timeout", help="Per-request timeout, in seconds."),
+    api_key: str = typer.Option(
+        None, "--api-key", help="Required on every route but /api/health. Falls back to $MEMGIT_API_KEY."
+    ),
+    insecure: bool = typer.Option(
+        False, "--insecure", help="Allow binding a non-loopback host with no API key."
+    ),
 ) -> None:
     """Run the dashboard and REST API over this repository (slice 10).
 
@@ -1376,8 +1411,9 @@ def serve_web_cmd(
         _fail("the 'web' extra is required: pip install memgit[web] (or `uv sync --extra web`)")
         return
 
+    resolved_key = _resolve_api_key_or_fail(api_key, host, insecure=insecure)
     repo = _repo()
-    web_app = create_app(repo, model=model, max_retries=max_retries, timeout=timeout)
+    web_app = create_app(repo, model=model, max_retries=max_retries, timeout=timeout, api_key=resolved_key)
     typer.echo(f"memgit dashboard: http://{host}:{port}", err=True)
     uvicorn.run(web_app, host=host, port=port)
 

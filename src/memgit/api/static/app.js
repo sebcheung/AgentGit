@@ -23,13 +23,53 @@ class ApiError extends Error {
   }
 }
 
-async function api(path, init) {
-  const response = await fetch(path, init);
+const API_KEY_STORAGE_KEY = "memgitApiKey";
+
+// sessionStorage, not localStorage: the key should not outlive the tab, and
+// never lands in a URL or a cookie either -- there is no CSRF story to
+// write because there is nothing ambient for a third-party page to ride on.
+function getStoredApiKey() {
+  try {
+    return sessionStorage.getItem(API_KEY_STORAGE_KEY);
+  } catch (err) {
+    return null;
+  }
+}
+
+function setStoredApiKey(key) {
+  try {
+    sessionStorage.setItem(API_KEY_STORAGE_KEY, key);
+  } catch (err) {
+    // sessionStorage unavailable -- the key just won't persist between
+    // requests in this tab; not fatal, the next 401 prompts again.
+  }
+}
+
+async function fetchWithApiKey(path, init) {
+  const headers = new Headers((init && init.headers) || {});
+  const key = getStoredApiKey();
+  if (key) headers.set("X-API-Key", key);
+  const response = await fetch(path, { ...init, headers });
   let body = null;
   try {
     body = await response.json();
   } catch (err) {
     body = null;
+  }
+  return { response, body };
+}
+
+async function api(path, init) {
+  let { response, body } = await fetchWithApiKey(path, init);
+  if (response.status === 401) {
+    // Auth is off (the loopback-dev default) whenever this branch never
+    // runs -- the first request already succeeded above. Only a server
+    // started with --api-key ever gets here.
+    const key = window.prompt("memgit API key required:");
+    if (key) {
+      setStoredApiKey(key);
+      ({ response, body } = await fetchWithApiKey(path, init));
+    }
   }
   if (!response.ok) throw new ApiError(body, response.status);
   return body;
