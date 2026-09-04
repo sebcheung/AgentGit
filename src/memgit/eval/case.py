@@ -9,6 +9,15 @@ network. See ``runner.py`` for how a check is actually evaluated, and the
 package docstring (``__init__.py``) for why that offline property is the
 point of this package.
 
+**Suites are authored JSON, not a stored object.** They live at
+``.memgit/eval/*.json`` — repo-local and never committed into memory
+history, exactly like ``.memgit/cardinality.json`` and ``.memgit/decay.json``
+(see those modules' docstrings). A suite is a question you ask, not data you
+store: committing it into the history it grades would force the same
+unanswerable "whose suite wins when diffing two commits" the cardinality map
+already refuses to answer. JSON, not YAML — no YAML dialect exists anywhere
+else in this project, and a second config format would be unearned.
+
 The check vocabulary is closed and small on purpose, the same instinct as
 ``diff.py``'s eight-kind change taxonomy: an open, pluggable assertion
 registry is a framework nobody asked for. Adding a ninth kind means editing
@@ -17,11 +26,16 @@ this module, not registering a plugin.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Mapping, Union
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Mapping, Union
 
 from memgit.core.diff import ChangeKind
+
+if TYPE_CHECKING:
+    from memgit.core.repository import Repository
 
 __all__ = [
     "KeyExists",
@@ -32,8 +46,15 @@ __all__ = [
     "NoViolations",
     "Recalls",
     "Check",
+    "EvalCase",
+    "EvalSuite",
     "EvalFormatError",
+    "load_suites",
+    "SUITE_SUBDIR",
 ]
+
+SUITE_SUBDIR = "eval"
+_VERSION = 1
 
 
 class EvalFormatError(ValueError):
@@ -181,3 +202,124 @@ def _decode_check(payload: Mapping[str, Any]) -> Check:
         return cls(**kwargs)
     except (TypeError, ValueError) as exc:
         raise EvalFormatError(f"check {kind!r} is malformed: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Cases and suites
+# ---------------------------------------------------------------------------
+
+_CASE_FIELDS = frozenset({"id", "checks", "description"})
+_SUITE_FIELDS = frozenset({"version", "cases"})
+
+
+@dataclass(frozen=True, slots=True)
+class EvalCase:
+    """One named yardstick: a case id and the checks it must satisfy."""
+
+    id: str
+    checks: tuple[Check, ...]
+    description: str | None = None
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "EvalCase":
+        if not isinstance(payload, Mapping):
+            raise EvalFormatError(f"a case must be a JSON object, got {type(payload).__name__}")
+        unknown = payload.keys() - _CASE_FIELDS
+        if unknown:
+            raise EvalFormatError(f"case has unknown keys: {sorted(unknown)}")
+
+        case_id = payload.get("id")
+        if not isinstance(case_id, str) or not case_id.strip():
+            raise EvalFormatError(f"case 'id' must be a non-empty string, got {case_id!r}")
+
+        checks_payload = payload.get("checks")
+        if not isinstance(checks_payload, list) or not checks_payload:
+            raise EvalFormatError(f"case {case_id!r} must declare a non-empty 'checks' list")
+        checks = tuple(_decode_check(check) for check in checks_payload)
+
+        description = payload.get("description")
+        if description is not None and not isinstance(description, str):
+            raise EvalFormatError(f"case {case_id!r} has a non-string 'description'")
+
+        return cls(id=case_id, checks=checks, description=description)
+
+
+@dataclass(frozen=True, slots=True)
+class EvalSuite:
+    """A named group of :class:`EvalCase`\\ s, loaded from one JSON file."""
+
+    name: str
+    cases: tuple[EvalCase, ...]
+
+    def __iter__(self):
+        return iter(self.cases)
+
+    def __len__(self) -> int:
+        return len(self.cases)
+
+    @classmethod
+    def from_dict(cls, name: str, payload: Mapping[str, Any]) -> "EvalSuite":
+        if not isinstance(payload, Mapping):
+            raise EvalFormatError(f"suite {name!r} must be a JSON object, got {type(payload).__name__}")
+        unknown = payload.keys() - _SUITE_FIELDS
+        if unknown:
+            raise EvalFormatError(f"suite {name!r} has unknown keys: {sorted(unknown)}")
+
+        version = payload.get("version", _VERSION)
+        if version != _VERSION:
+            raise EvalFormatError(f"suite {name!r}: unsupported version {version!r}")
+
+        cases_payload = payload.get("cases")
+        if not isinstance(cases_payload, list):
+            raise EvalFormatError(f"suite {name!r} must declare a 'cases' list")
+
+        cases: list[EvalCase] = []
+        seen: set[str] = set()
+        for case_payload in cases_payload:
+            case = EvalCase.from_dict(case_payload)
+            if case.id in seen:
+                raise EvalFormatError(f"suite {name!r} has a duplicate case id: {case.id!r}")
+            seen.add(case.id)
+            cases.append(case)
+
+        return cls(name=name, cases=tuple(cases))
+
+
+def _load_suite_file(path: Path) -> EvalSuite:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise EvalFormatError(f"{path}: could not be read: {exc}") from exc
+    except ValueError as exc:
+        raise EvalFormatError(f"{path}: not valid JSON: {exc}") from exc
+    return EvalSuite.from_dict(path.stem, payload)
+
+
+def load_suites(repo: "Repository", path: Path | None = None) -> tuple[EvalSuite, ...]:
+    """Load every declared suite for ``repo``.
+
+    Args:
+        repo: The repository whose ``.memgit/eval/`` directory is the
+            default location — see the module docstring for why suites live
+            outside the object store.
+        path: Overrides the default. A single file loads as one suite; a
+            directory loads every ``*.json`` file in it, sorted by name so
+            output order is stable across runs.
+
+    Returns:
+        An empty tuple if the default directory does not exist — matching
+        :meth:`~memgit.core.repository.Repository.cardinality`'s "a missing
+        file is a normal state," not an error.
+    """
+    if path is not None:
+        if path.is_file():
+            return (_load_suite_file(path),)
+        if not path.is_dir():
+            raise EvalFormatError(f"{path}: no such suite file or directory")
+        root = path
+    else:
+        root = repo.memgit_dir / SUITE_SUBDIR
+        if not root.is_dir():
+            return ()
+
+    return tuple(_load_suite_file(f) for f in sorted(root.glob("*.json")))
