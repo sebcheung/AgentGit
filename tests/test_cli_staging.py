@@ -8,8 +8,6 @@ overlay/conflict behavior again.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from typer.testing import CliRunner
 

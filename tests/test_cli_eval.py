@@ -89,7 +89,7 @@ class TestEvalRun:
         assert result.exit_code == 1
 
     def test_custom_suite_path(self, tmp_path):
-        repo = _seed_repo(tmp_path)
+        _seed_repo(tmp_path)
         suite_path = tmp_path / "custom.json"
         suite_path.write_text(
             json.dumps({"cases": [{"id": "c1", "checks": [{"check": "key_exists", "subject": "user", "predicate": "city"}]}]})

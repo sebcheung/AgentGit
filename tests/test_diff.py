@@ -25,13 +25,13 @@ from memgit.core.tree import EMPTY_TREE_HASH, Tree
 
 
 def make_fact(**overrides) -> Fact:
-    defaults = dict(
-        subject="user",
-        predicate="prefers_language",
-        object="Python",
-        confidence=0.9,
-        asserted_at="2026-08-11T12:00:00+00:00",
-    )
+    defaults = {
+        "subject": "user",
+        "predicate": "prefers_language",
+        "object": "Python",
+        "confidence": 0.9,
+        "asserted_at": "2026-08-11T12:00:00+00:00",
+    }
     defaults.update(overrides)
     return Fact(**defaults)
 
@@ -97,7 +97,7 @@ class TestMergeJoin:
         # keep them distinct and in the tuple-ordered position.
         left = make_fact(subject="a", predicate="b/c", object="1")
         right = make_fact(subject="a/b", predicate="c", object="1")
-        before, reader = tree_and_reader(left)
+        before, _reader = tree_and_reader(left)
         after = Tree.from_facts([right])
         combined_reader = CountingFactReader({left.hash: left, right.hash: right})
 
@@ -388,9 +388,9 @@ class TestLaziness:
         facts = [make_fact(subject=f"s{i}", predicate="p", object=str(i)) for i in range(1000)]
         before = Tree.from_facts(facts)
         changed = make_fact(subject="s0", predicate="p", object="changed")
-        after_facts = facts[1:] + [changed]
+        after_facts = [*facts[1:], changed]
         after = Tree.from_facts(after_facts)
-        reader = CountingFactReader({f.hash: f for f in facts + [changed]})
+        reader = CountingFactReader({f.hash: f for f in [*facts, changed]})
 
         result = diff_trees(before, after, reader)
         assert len(result.keys) == 1

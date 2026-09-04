@@ -23,7 +23,7 @@ def commit_hash(commit: Commit) -> str:
 
 def build_chain(n: int, start_time: str = "2026-01-01T00:00:00+00:00") -> tuple[dict[str, Commit], list[str]]:
     """A linear chain of n commits, oldest first; returns (store, hashes oldest->newest)."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     store: dict[str, Commit] = {}
     hashes: list[str] = []

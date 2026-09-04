@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
 
+if TYPE_CHECKING:
+    from memgit.agent.runtime import MemoryAgent, TurnResult
+
 from memgit import __version__
 from memgit.core.commit import Commit
-from memgit.core.decay import DecayPolicy
 from memgit.core.diff import ChangeKind, Diff
 from memgit.core.fact import Fact
 from memgit.core.graph import ancestors, is_ancestor, walk
@@ -73,14 +75,14 @@ def _parse_as_of(value: str | None) -> datetime:
     point a human asked "what does it look like right now."
     """
     if value is None:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
     try:
         parsed = datetime.fromisoformat(value)
     except ValueError:
         _fail(f"--as-of must be ISO-8601, got {value!r}")
         raise  # unreachable; _fail always raises
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed
 
 
@@ -737,7 +739,7 @@ def state_cmd(
         if decay_moment is not None:
             policy = repo.decay()
             payload["as_of"] = decay_moment.isoformat()
-            for fact_payload, fact in zip(payload["facts"], memory.facts):
+            for fact_payload, fact in zip(payload["facts"], memory.facts, strict=False):
                 fact_payload["decayed_confidence"] = policy.decayed(fact, as_of=decay_moment)
         typer.echo(json.dumps(payload, indent=2, ensure_ascii=False))
     elif render:
@@ -812,7 +814,7 @@ def hash_object_cmd(
             ).to_dict()
         except (TypeError, ValueError) as exc:
             typer.secho(str(exc), fg=typer.colors.RED, err=True)
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=1) from None
     else:
         if sys.stdin.isatty():
             typer.secho(
@@ -826,7 +828,7 @@ def hash_object_cmd(
             payload = json.loads(sys.stdin.read())
         except ValueError as exc:
             typer.secho(f"stdin is not valid JSON: {exc}", fg=typer.colors.RED, err=True)
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=1) from None
 
     typer.echo(_repo().store.put(payload) if write else hash_object(payload))
 
@@ -848,13 +850,13 @@ def cat_file_cmd(
         payload = _repo().store.get(obj_hash)
     except ObjectNotFoundError:
         typer.secho(f"object not found: {obj_hash}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     except CorruptObjectError as exc:
         typer.secho(f"corrupt object: {exc}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     except (TypeError, ValueError) as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     typer.echo(json.dumps(payload, indent=2 if pretty else None, ensure_ascii=False))
 
@@ -893,7 +895,7 @@ def _agent_client(model: str) -> Any:
     return default_client(model=model)
 
 
-def _make_agent(repo: Repository, *, model: str, record_empty: bool) -> "MemoryAgent":
+def _make_agent(repo: Repository, *, model: str, record_empty: bool) -> MemoryAgent:
     from memgit.agent.client import AgentError
     from memgit.agent.runtime import MemoryAgent
 
@@ -905,7 +907,7 @@ def _make_agent(repo: Repository, *, model: str, record_empty: bool) -> "MemoryA
     return MemoryAgent(repo, client=client, model=model, record_empty=record_empty)
 
 
-def _print_turn_result(repo: Repository, result: "TurnResult") -> None:
+def _print_turn_result(repo: Repository, result: TurnResult) -> None:
     typer.echo(result.reply)
     if result.commit is None:
         typer.secho("(no memory change)", fg=typer.colors.YELLOW, err=True)
@@ -1286,8 +1288,9 @@ def staging_commit_cmd(
     key: str = typer.Argument(..., help="A staging area's key, from `memgit staging`."),
     message: str = typer.Option(..., "-m", "--message", help="Commit message."),
 ) -> None:
-    """Seal KEY's staged facts into a durable commit — the CLI's escape hatch
-    for a session an MCP client never sealed itself.
+    """Seal KEY's staged facts into a durable commit.
+
+    The CLI's escape hatch for a session an MCP client never sealed itself.
     """
     repo = _repo()
     area = repo.staging_area(key)
@@ -1350,8 +1353,9 @@ def serve_web_cmd(
     streamable-http`'s 8000, since a live demo plausibly runs both.
     """
     try:
-        from memgit.api.app import create_app
         import uvicorn
+
+        from memgit.api.app import create_app
     except ImportError:
         _fail("the 'web' extra is required: pip install memgit[web] (or `uv sync --extra web`)")
         return

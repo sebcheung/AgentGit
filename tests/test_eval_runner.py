@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from memgit.core.diff import ChangeKind
 from memgit.core.fact import Fact
@@ -10,6 +10,7 @@ from memgit.eval.case import (
     ConfidenceAtLeast,
     DiffKind,
     EvalCase,
+    EvalSuite,
     KeyAbsent,
     KeyExists,
     NoViolations,
@@ -17,7 +18,6 @@ from memgit.eval.case import (
     ValueIs,
 )
 from memgit.eval.runner import run_case, run_suite
-from memgit.eval.case import EvalSuite
 
 
 def _case(*checks) -> EvalCase:
@@ -136,7 +136,7 @@ class TestRecalls:
             query="what should I avoid eating",
             subject="user",
             predicate="allergies",
-            as_of=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            as_of=datetime(2026, 1, 1, tzinfo=UTC),
             k=8,
         )
         result = run_case(agent_repo, _case(check))
@@ -148,7 +148,7 @@ class TestRecalls:
             query="anything",
             subject="user",
             predicate="allergies",
-            as_of=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            as_of=datetime(2026, 1, 1, tzinfo=UTC),
             k=8,
         )
         result = run_case(agent_repo, _case(check))

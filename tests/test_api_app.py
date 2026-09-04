@@ -14,17 +14,17 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
 
-from memgit.api.app import create_app  # noqa: E402
-from memgit.api.errors import LLMUnavailableError  # noqa: E402
-from memgit.core.fact import Fact  # noqa: E402
-from memgit.core.repository import (  # noqa: E402
+from memgit.api.app import create_app
+from memgit.api.errors import LLMUnavailableError
+from memgit.core.fact import Fact
+from memgit.core.repository import (
     NotARepositoryError,
     Repository,
     RevisionNotFoundError,
 )
-from memgit.core.store import CorruptObjectError, ObjectNotFoundError  # noqa: E402
+from memgit.core.store import CorruptObjectError, ObjectNotFoundError
 
 
 @pytest.fixture

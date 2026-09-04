@@ -25,13 +25,13 @@ def store(tmp_path) -> ObjectStore:
 
 
 def make_commit(**overrides) -> Commit:
-    defaults = dict(
-        tree=TREE_A,
-        parents=(PARENT,),
-        message="learned the user's timezone",
-        author="agent:claude-opus-5",
-        committed_at="2026-09-01T14:03:22+00:00",
-    )
+    defaults = {
+        "tree": TREE_A,
+        "parents": (PARENT,),
+        "message": "learned the user's timezone",
+        "author": "agent:claude-opus-5",
+        "committed_at": "2026-09-01T14:03:22+00:00",
+    }
     defaults.update(overrides)
     return Commit(**defaults)
 

@@ -9,10 +9,10 @@ the fake never imports ``anthropic``.
 from __future__ import annotations
 
 import pytest
+from conftest import ScriptedClient, text_message, tool_use_message
 from typer.testing import CliRunner
 
 import memgit.cli as cli
-from conftest import ScriptedClient, text_message, tool_use_message
 from memgit.cli import app
 
 runner = CliRunner()

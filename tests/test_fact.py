@@ -16,15 +16,15 @@ from memgit.core.fact import Fact, canonical_json, hash_payload
 
 def make_fact(**overrides) -> Fact:
     """A fact with all fields populated, for tests that vary one at a time."""
-    defaults = dict(
-        subject="user",
-        predicate="prefers_language",
-        object="Python",
-        confidence=0.9,
-        asserted_at="2026-08-11T12:00:00+00:00",
-        source="session:42/turn:7",
-        source_text="I mostly write Python these days",
-    )
+    defaults = {
+        "subject": "user",
+        "predicate": "prefers_language",
+        "object": "Python",
+        "confidence": 0.9,
+        "asserted_at": "2026-08-11T12:00:00+00:00",
+        "source": "session:42/turn:7",
+        "source_text": "I mostly write Python these days",
+    }
     defaults.update(overrides)
     return Fact(**defaults)
 
