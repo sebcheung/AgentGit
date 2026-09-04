@@ -56,6 +56,11 @@ const state = {
   diffError: null,
   stateData: null,
   stateError: null,
+  replay: {
+    busy: false,
+    result: null,
+    error: null,
+  },
 };
 
 async function loadDiff() {
@@ -86,6 +91,13 @@ async function loadState() {
     state.stateData = null;
     state.stateError = err.message;
   }
+}
+
+function fillReplayKey(subject, predicate, factHash) {
+  document.getElementById("replay-subject").value = subject;
+  document.getElementById("replay-predicate").value = predicate;
+  document.getElementById("replay-fact-hash").value = factHash || "";
+  document.getElementById("replay-rev").value = state.after || "HEAD";
 }
 
 async function selectNode(hash, shiftKey) {
@@ -199,6 +211,11 @@ function renderDiffTab() {
       loadDiff().then(render);
     });
   }
+  container.querySelectorAll(".fact-row").forEach((row) => {
+    row.addEventListener("click", () => {
+      fillReplayKey(row.dataset.subject, row.dataset.predicate, "");
+    });
+  });
 }
 
 function renderStateTab() {
@@ -227,6 +244,51 @@ function renderStateTab() {
   }
 
   container.innerHTML = parts.join("");
+  container.querySelectorAll(".fact-row").forEach((row) => {
+    row.addEventListener("click", () => {
+      fillReplayKey(row.dataset.subject, row.dataset.predicate, "");
+    });
+  });
+}
+
+function renderReplayResult() {
+  const container = document.getElementById("replay-result");
+  const submit = document.getElementById("replay-submit");
+  submit.disabled = state.replay.busy;
+  submit.textContent = state.replay.busy
+    ? "replaying (two model calls, ~10-40s)..."
+    : "Run replay comparison";
+
+  if (state.replay.error) {
+    container.innerHTML = `<div class="error-notice">${escapeHtml(state.replay.error)}</div>`;
+    return;
+  }
+  const result = state.replay.result;
+  if (!result) {
+    container.innerHTML = "";
+    return;
+  }
+
+  const badgeClass = result.changed ? "yes" : "no";
+  const pinned = result.retrieval
+    ? `<p class="stat-line">${result.retrieval.k} of ${result.retrieval.candidates} fact(s) pinned for both sides.</p>`
+    : "";
+
+  container.innerHTML = `
+    <span class="changed-badge ${badgeClass}">changed: ${result.changed ? "yes" : "no"}</span>
+    <div class="replay-columns">
+      <div>
+        <strong>baseline</strong>
+        <pre>${escapeHtml(result.baseline.reply)}</pre>
+      </div>
+      <div>
+        <strong>ablated</strong>
+        <pre>${escapeHtml(result.ablated.reply)}</pre>
+      </div>
+    </div>
+    ${pinned}
+    <p class="caveat">Evidence, not proof: removing one fact can have downstream effects on others that reference it.</p>
+  `;
 }
 
 function render() {
@@ -239,6 +301,7 @@ function render() {
   } else {
     renderStateTab();
   }
+  renderReplayResult();
 }
 
 function wireStaticControls() {
@@ -250,6 +313,35 @@ function wireStaticControls() {
     state.tab = "state";
     if (!state.stateData) await loadState();
     render();
+  });
+
+  document.getElementById("replay-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.target;
+    const body = {
+      rev: form.rev.value || "HEAD",
+      subject: form.subject.value,
+      predicate: form.predicate.value,
+      query: form.query.value,
+    };
+    if (form.fact_hash.value) body.fact_hash = form.fact_hash.value;
+
+    state.replay.busy = true;
+    state.replay.error = null;
+    state.replay.result = null;
+    render();
+    try {
+      state.replay.result = await api("/api/replay", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      state.replay.error = err.message;
+    } finally {
+      state.replay.busy = false;
+      render();
+    }
   });
 }
 
