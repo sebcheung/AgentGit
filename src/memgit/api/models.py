@@ -25,6 +25,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 __all__ = [
+    "CheckResult",
     "CommitDetail",
     "CommitNode",
     "DiffResponse",
@@ -32,6 +33,7 @@ __all__ = [
     "HeadModel",
     "HealthResponse",
     "LogResponse",
+    "ReadyResponse",
     "RecallResponse",
     "RecalledFact",
     "ReplayOutcomeModel",
@@ -59,6 +61,26 @@ class ErrorResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     version: str
+
+
+class CheckResult(BaseModel):
+    """One readiness check's outcome — see ``health.py``."""
+
+    ok: bool
+    detail: str
+    ms: float
+
+
+class ReadyResponse(BaseModel):
+    """``GET /api/ready`` — an orchestrator-facing signal, unlike ``/health``'s pure liveness.
+
+    ``checks`` grows a new key whenever a new dependency (the Postgres
+    projection, once it exists) enters the picture; every key's shape stays
+    this same ``CheckResult``.
+    """
+
+    status: str
+    checks: dict[str, CheckResult]
 
 
 class HeadModel(BaseModel):
