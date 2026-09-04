@@ -207,6 +207,53 @@ touching the retrieval or agent code around it. See PLAN.md's "Decisions
 locked in" for the full reasoning, including why this isn't backed by a
 vector database.
 
+## MCP server
+
+`memgit serve` exposes this same memory store to any MCP-compatible host —
+Claude Desktop, or a live Claude conversation over a tunnel — as
+`remember`/`forget`/`commit`/`recall`/`read_state`/`diff`/`log`/
+`create_branch` tools. Two things carry over from the CLI's own design:
+
+- **Writes are staged, not immediate.** `remember`/`forget` calls fold onto
+  the connecting session's own staging area (a real, hashed, diffable tree
+  under `refs/memgit/staging/<key>/`, inspectable with `memgit staging`);
+  nothing is durable until the model calls `commit`. There is no MCP
+  tool-calling loop for the server to observe ending, unlike
+  `memgit ask`/`chat`, so the turn boundary is *declared* instead of
+  *observed* — see PLAN.md's "Decisions locked in" for the full argument.
+- **Reads never follow HEAD.** Every read tool takes an explicit, optional
+  `rev` (default: the last commit on the repository's configured branch) —
+  HEAD is the human's cursor at the CLI, not a session's.
+
+```sh
+py -m uv sync --extra mcp --system-certs
+py -m uv run memgit serve                              # stdio, for Claude Desktop
+py -m uv run memgit serve --transport streamable-http   # a real HTTP server
+```
+
+For Claude Desktop, add to its config:
+
+```json
+{
+  "mcpServers": {
+    "memgit": {
+      "command": "uv",
+      "args": ["run", "--project", "/path/to/AgentGit", "memgit", "serve"]
+    }
+  }
+}
+```
+
+If a session never calls `commit` — a crashed host, a closed connection —
+nothing is lost: `memgit staging` lists every open staging area,
+`memgit staging show <key>` / `diff <key>` inspect it, and
+`memgit staging commit <key> -m "..."` seals it from the CLI.
+
+**No auth in this slice.** `memgit serve` binds to loopback by default;
+tunneling it (`ngrok`, `cloudflared`) for a live demo means unauthenticated
+write access to memory for as long as the tunnel is open — close it when
+the demo ends. See PLAN.md's "Honest caveats."
+
 ## Quickstart
 
 ```sh
