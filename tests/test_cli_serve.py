@@ -52,3 +52,72 @@ class TestServe:
         result = runner.invoke(app, ["serve"])
         assert result.exit_code != 0
         assert "mcp" in result.output.lower()
+
+
+class TestServeAuth:
+    def test_refuses_non_loopback_host_with_no_api_key(self, tmp_path):
+        _seed_repo(tmp_path)
+        result = runner.invoke(app, ["serve", "--transport", "streamable-http", "--host", "0.0.0.0"])
+        assert result.exit_code != 0
+        assert "refusing to bind" in result.output
+
+    def test_insecure_allows_non_loopback_host_with_no_key(self, tmp_path, monkeypatch):
+        _seed_repo(tmp_path)
+        import memgit.mcp.server as mcp_server_module
+
+        calls = {}
+
+        def fake_run(repo, *, transport, host, port, api_key=None):
+            calls["host"] = host
+            calls["api_key"] = api_key
+
+        monkeypatch.setattr(mcp_server_module, "run", fake_run)
+
+        result = runner.invoke(
+            app, ["serve", "--transport", "streamable-http", "--host", "0.0.0.0", "--insecure"]
+        )
+        assert result.exit_code == 0, result.output
+        assert calls["host"] == "0.0.0.0"
+        assert calls["api_key"] is None
+
+    def test_api_key_flag_reaches_run(self, tmp_path, monkeypatch):
+        _seed_repo(tmp_path)
+        import memgit.mcp.server as mcp_server_module
+
+        calls = {}
+
+        def fake_run(repo, *, transport, host, port, api_key=None):
+            calls["api_key"] = api_key
+
+        monkeypatch.setattr(mcp_server_module, "run", fake_run)
+
+        result = runner.invoke(app, ["serve", "--transport", "streamable-http", "--api-key", "secret"])
+        assert result.exit_code == 0, result.output
+        assert calls["api_key"] == "secret"
+
+    def test_env_var_is_used_when_no_flag_given(self, tmp_path, monkeypatch):
+        _seed_repo(tmp_path)
+        monkeypatch.setenv("MEMGIT_API_KEY", "from-env")
+        import memgit.mcp.server as mcp_server_module
+
+        calls = {}
+
+        def fake_run(repo, *, transport, host, port, api_key=None):
+            calls["api_key"] = api_key
+
+        monkeypatch.setattr(mcp_server_module, "run", fake_run)
+
+        result = runner.invoke(app, ["serve", "--transport", "streamable-http"])
+        assert result.exit_code == 0, result.output
+        assert calls["api_key"] == "from-env"
+
+    def test_stdio_ignores_the_loopback_guard(self, tmp_path, monkeypatch):
+        # stdio has no host/port to guard against -- --host is meaningless
+        # to it, so no key should ever be required for it.
+        _seed_repo(tmp_path)
+        import memgit.mcp.server as mcp_server_module
+
+        monkeypatch.setattr(mcp_server_module, "run", lambda *a, **k: None)
+
+        result = runner.invoke(app, ["serve", "--host", "0.0.0.0"])
+        assert result.exit_code == 0, result.output

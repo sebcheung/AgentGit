@@ -1362,6 +1362,14 @@ def serve_cmd(
     transport: str = typer.Option("stdio", "--transport", help="'stdio' or 'streamable-http'."),
     host: str = typer.Option("127.0.0.1", "--host", help="Bind address for --transport streamable-http."),
     port: int = typer.Option(8000, "--port", help="Bind port for --transport streamable-http."),
+    api_key: str = typer.Option(
+        None,
+        "--api-key",
+        help="Required for --transport streamable-http (falls back to $MEMGIT_API_KEY). No effect on stdio.",
+    ),
+    insecure: bool = typer.Option(
+        False, "--insecure", help="Allow binding a non-loopback host with no API key (streamable-http only)."
+    ),
 ) -> None:
     """Run an MCP server over this repository (slice 8).
 
@@ -1379,7 +1387,17 @@ def serve_cmd(
     except ImportError:
         _fail("the 'mcp' extra is required: pip install memgit[mcp] (or `uv sync --extra mcp`)")
         return
-    run_mcp_server(_repo(), transport=transport, host=host, port=port)
+
+    if transport == "streamable-http":
+        resolved_key = _resolve_api_key_or_fail(api_key, host, insecure=insecure)
+    else:
+        # stdio has no host/port to guard -- the host process already owns
+        # the pipe. Still resolve the key so `run()` can warn it has no
+        # effect here, rather than silently ignoring a flag the caller set.
+        from memgit.keyauth import resolve_key
+
+        resolved_key = resolve_key(api_key)
+    run_mcp_server(_repo(), transport=transport, host=host, port=port, api_key=resolved_key)
 
 
 @app.command("serve-web")
