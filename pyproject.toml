@@ -89,15 +89,12 @@ warn_redundant_casts = true
 no_implicit_optional = true
 disallow_untyped_defs = true
 
-# Every package starts ignored; each is flipped on in its own commit as it's
-# made to pass, so CI stays green at every point in that sequence rather than
-# going red for the length of the whole pass. tests/ is out of `files`
-# entirely, not just ignored here -- see the "Decisions locked in" row this
-# slice adds to PLAN.md for why.
-[[tool.mypy.overrides]]
-module = "memgit.*"
-ignore_errors = true
-
+# Every submodule below was checked in, one commit at a time, from a
+# starting point where all of them were `ignore_errors = true` -- so CI
+# stayed green at every point in that sequence rather than going red for the
+# length of the whole pass. tests/ is out of `files` entirely, not just
+# ignored here -- see the "Decisions locked in" row this slice adds to
+# PLAN.md for why.
 [[tool.mypy.overrides]]
 module = ["memgit.core.*", "memgit.retrieval.*"]
 ignore_errors = false
@@ -118,6 +115,10 @@ ignore_errors = false
 # as `misc` regardless of how the tool function itself is annotated.
 disallow_untyped_calls = false
 disable_error_code = ["misc"]
+
+[[tool.mypy.overrides]]
+module = "memgit.cli"
+ignore_errors = false
 
 [[tool.mypy.overrides]]
 module = ["mcp.*", "anthropic.*", "uvicorn.*"]
