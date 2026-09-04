@@ -33,21 +33,22 @@ writes one yet.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from enum import Enum
-from typing import TYPE_CHECKING, Sequence
+from enum import StrEnum
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from memgit.core.graph import CommitReader
 
 __all__ = [
+    "AncestryError",
+    "RevExpr",
+    "RevSyntaxError",
     "Step",
     "StepKind",
-    "RevExpr",
-    "parse_revision",
     "apply_steps",
-    "RevSyntaxError",
-    "AncestryError",
+    "parse_revision",
 ]
 
 
@@ -67,7 +68,7 @@ class AncestryError(LookupError):
     """
 
 
-class StepKind(str, Enum):
+class StepKind(StrEnum):
     """Which of the two ancestry operators a :class:`Step` came from."""
 
     PARENT = "parent"
@@ -167,7 +168,7 @@ def parse_revision(revision: str) -> RevExpr:
     return RevExpr(base=base, steps=tuple(steps), reflog_index=reflog_index)
 
 
-def apply_steps(commit_hash: str, steps: Sequence[Step], read: "CommitReader") -> str:
+def apply_steps(commit_hash: str, steps: Sequence[Step], read: CommitReader) -> str:
     """Walk ``steps`` from ``commit_hash``; return the resulting commit hash.
 
     Pure over ``read``, exactly like ``graph.py``'s traversal functions — no

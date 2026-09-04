@@ -11,24 +11,24 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from conftest import ScriptedClient, text_message  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
+from conftest import ScriptedClient, text_message
+from fastapi.testclient import TestClient
 
-from memgit.api.app import create_app  # noqa: E402
-from memgit.api.deps import get_llm_client  # noqa: E402
-from memgit.core.fact import Fact  # noqa: E402
-from memgit.core.repository import Repository  # noqa: E402
+from memgit.api.app import create_app
+from memgit.api.deps import get_llm_client
+from memgit.core.fact import Fact
+from memgit.core.repository import Repository
 
 
 def make_fact(**overrides) -> Fact:
-    defaults = dict(
-        subject="user",
-        predicate="prefers_language",
-        object="Python",
-        confidence=0.9,
-        source="test",
-        source_text="I like Python.",
-    )
+    defaults = {
+        "subject": "user",
+        "predicate": "prefers_language",
+        "object": "Python",
+        "confidence": 0.9,
+        "source": "test",
+        "source_text": "I like Python.",
+    }
     defaults.update(overrides)
     return Fact(**defaults)
 

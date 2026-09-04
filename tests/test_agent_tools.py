@@ -33,13 +33,13 @@ from memgit.core.state import MemoryState
 
 
 def make_fact(**overrides) -> Fact:
-    defaults = dict(
-        subject="user",
-        predicate="prefers_language",
-        object="Python",
-        confidence=0.9,
-        asserted_at="2026-08-11T12:00:00+00:00",
-    )
+    defaults = {
+        "subject": "user",
+        "predicate": "prefers_language",
+        "object": "Python",
+        "confidence": 0.9,
+        "asserted_at": "2026-08-11T12:00:00+00:00",
+    }
     defaults.update(overrides)
     return Fact(**defaults)
 
@@ -71,13 +71,13 @@ class TestSchemas:
 
 class TestDecodeRemember:
     def valid_payload(self, **overrides):
-        payload = dict(
-            subject="user",
-            predicate="prefers_language",
-            object="Python",
-            confidence=0.9,
-            source_text="I really like Python.",
-        )
+        payload = {
+            "subject": "user",
+            "predicate": "prefers_language",
+            "object": "Python",
+            "confidence": 0.9,
+            "source_text": "I really like Python.",
+        }
         payload.update(overrides)
         return payload
 

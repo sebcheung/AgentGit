@@ -31,8 +31,8 @@ from __future__ import annotations
 
 import json
 import struct
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 __all__ = ["VectorIndex", "VectorIndexError"]
 
@@ -67,7 +67,7 @@ class VectorIndex:
         self._offsets: dict[str, int] | None = None
 
     @classmethod
-    def open(cls, embeddings_dir: Path, *, embedder_id: str, dim: int) -> "VectorIndex":
+    def open(cls, embeddings_dir: Path, *, embedder_id: str, dim: int) -> VectorIndex:
         """Open (without creating) the index for ``embedder_id`` under ``embeddings_dir``."""
         return cls(Path(embeddings_dir) / _slug(embedder_id), embedder_id=embedder_id, dim=dim)
 

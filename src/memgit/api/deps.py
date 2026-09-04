@@ -19,7 +19,7 @@ from memgit.core.repository import Repository
 if TYPE_CHECKING:
     from memgit.agent.client import LLMClient
 
-__all__ = ["get_repo", "get_llm_client", "retrieval_lock", "replay_semaphore"]
+__all__ = ["get_llm_client", "get_repo", "replay_semaphore", "retrieval_lock"]
 
 # `VectorIndex` (retrieval/index.py) is single-writer by construction: a
 # cache-miss write appends to `vectors.pack`, then read-modify-writes
@@ -44,7 +44,7 @@ def get_repo(request: Request) -> Repository:
     return request.app.state.repo
 
 
-def get_llm_client(request: Request) -> "LLMClient":
+def get_llm_client(request: Request) -> LLMClient:
     """The client ``POST /api/replay`` replays with, built fresh per request.
 
     Imports ``memgit.agent.client`` lazily so this module -- and therefore

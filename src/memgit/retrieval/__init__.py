@@ -22,12 +22,12 @@ from memgit.retrieval.rank import RetrievalResult, Retrieved, Retriever, cosine
 __all__ = [
     "Embedder",
     "HashingEmbedder",
-    "default_embedder",
-    "embed_text",
-    "VectorIndex",
-    "VectorIndexError",
     "RetrievalResult",
     "Retrieved",
     "Retriever",
+    "VectorIndex",
+    "VectorIndexError",
     "cosine",
+    "default_embedder",
+    "embed_text",
 ]

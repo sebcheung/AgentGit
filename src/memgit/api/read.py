@@ -14,7 +14,7 @@ between them.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -41,15 +41,18 @@ router = APIRouter()
 
 
 def _parse_as_of(value: str) -> datetime:
-    """Parse an ``as_of`` query param — a genuine client-input error, so
-    this raises locally (400) rather than through the global handlers,
-    matching the diff route's own local ``ValueError`` guard below."""
+    """Parse an ``as_of`` query param.
+
+    A genuine client-input error, so this raises locally (400) rather than
+    through the global handlers, matching the diff route's own local
+    ``ValueError`` guard below.
+    """
     try:
         parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"as_of must be ISO-8601, got {value!r}") from exc
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed
 
 
@@ -83,6 +86,7 @@ def health() -> HealthResponse:
 
 @router.get("/repo", response_model=RepoResponse)
 def get_repository(repo: Repository = Depends(get_repo)) -> RepoResponse:
+    """The repository's root, config, HEAD, and branch tips."""
     head = repo.head()
     config = repo.config()
     return RepoResponse(
@@ -102,10 +106,12 @@ def get_log(
     all_branches: Annotated[bool, Query(alias="all")] = False,
     repo: Repository = Depends(get_repo),
 ) -> LogResponse:
-    """Walk history with ``core.graph.walk`` — never ``Repository.log()``,
-    which yields bare ``Commit`` objects with no hash attached (see
-    ``_commit_node``). ``all=true`` walks every branch tip at once; ``walk``
-    already de-duplicates a diamond, so no manual merge is needed here.
+    """Walk history with ``core.graph.walk``, never ``Repository.log()``.
+
+    ``Repository.log()`` yields bare ``Commit`` objects with no hash attached
+    (see ``_commit_node``). ``all=true`` walks every branch tip at once;
+    ``walk`` already de-duplicates a diamond, so no manual merge is needed
+    here.
     """
     if all_branches:
         starts = list(repo.branches().values())
@@ -127,6 +133,7 @@ def get_log(
 
 @router.get("/commits/{rev:path}", response_model=CommitDetail)
 def get_commit(rev: str, repo: Repository = Depends(get_repo)) -> CommitDetail:
+    """One commit, plus its diff stat against its first parent."""
     resolved = repo.resolve(rev)
     commit = repo.read_commit(resolved)
     stat = repo.diff(after=resolved).stat().to_dict()
@@ -143,9 +150,10 @@ def get_state(
     as_of: Annotated[str | None, Query()] = None,
     repo: Repository = Depends(get_repo),
 ) -> StateResponse:
-    """Mirrors ``cli.py``'s ``state --json`` exactly, including the
-    decay-as-display-lens behavior: ``as_of`` never touches stored
-    confidence, only adds a ``decayed_confidence`` field per fact.
+    """Mirrors ``cli.py``'s ``state --json`` exactly, decay lens included.
+
+    ``as_of`` never touches stored confidence, only adds a
+    ``decayed_confidence`` field per fact.
     """
     resolved = repo.resolve(rev)
     memory = repo.state(resolved)
@@ -162,7 +170,7 @@ def get_state(
     if as_of_dt is not None:
         policy = repo.decay()
         payload["as_of"] = as_of_dt.isoformat()
-        for fact_payload, fact in zip(payload["facts"], memory.facts):
+        for fact_payload, fact in zip(payload["facts"], memory.facts, strict=False):
             fact_payload["decayed_confidence"] = policy.decayed(fact, as_of=as_of_dt)
 
     return StateResponse(
@@ -178,10 +186,11 @@ def get_diff(
     use_merge_base: Annotated[bool, Query()] = False,
     repo: Repository = Depends(get_repo),
 ) -> DiffResponse:
-    """``Diff.to_dict()`` passed through unmodified — see ``models.py``'s
-    ``DiffResponse`` docstring for why. The one local ``ValueError`` guard
-    below is deliberately *not* a global handler: see ``errors.py``'s
-    module docstring for the argument.
+    """``Diff.to_dict()`` passed through unmodified.
+
+    See ``models.py``'s ``DiffResponse`` docstring for why. The one local
+    ``ValueError`` guard below is deliberately *not* a global handler: see
+    ``errors.py``'s module docstring for the argument.
     """
     try:
         result = repo.diff(
@@ -217,17 +226,18 @@ def recall(
     decay: Annotated[bool, Query()] = True,
     repo: Repository = Depends(get_repo),
 ) -> RecallResponse:
-    """The same :class:`~memgit.retrieval.rank.Retriever` code path
-    ``memgit recall`` and a retrieval-mode agent turn use, scoped to
-    ``rev`` by construction rather than by a filter that could leak a
-    later commit or another branch. See ``deps.retrieval_lock`` for why
-    this acquires a lock: a cache miss here writes to the vector index,
-    and this API is the project's first concurrent caller of it.
+    """The same retrieval code path ``memgit recall`` and an agent turn use.
+
+    Uses :class:`~memgit.retrieval.rank.Retriever`, scoped to ``rev`` by
+    construction rather than by a filter that could leak a later commit or
+    another branch. See ``deps.retrieval_lock`` for why this acquires a
+    lock: a cache miss here writes to the vector index, and this API is the
+    project's first concurrent caller of it.
     """
     resolved = repo.resolve(rev)
     state = repo.state(resolved)
     weight = 0.0 if not decay else None
-    moment = _parse_as_of(as_of) if as_of is not None else datetime.now(timezone.utc)
+    moment = _parse_as_of(as_of) if as_of is not None else datetime.now(UTC)
 
     with retrieval_lock:
         retriever = repo.retriever(confidence_weight=weight)

@@ -47,9 +47,9 @@ if TYPE_CHECKING:
 
 __all__ = [
     "Head",
-    "RefStore",
     "InvalidRefNameError",
     "RefNotFoundError",
+    "RefStore",
 ]
 
 _SYMREF_PREFIX = "ref: "
@@ -119,12 +119,15 @@ class Head:
 
     @property
     def is_detached(self) -> bool:
+        """True if HEAD points at a commit directly, not through a branch."""
         return self.ref is None
 
     @property
     def branch(self) -> str | None:
-        """The branch name, if HEAD is symbolic (``"main"`` for
-        ``refs/heads/main``); ``None`` when detached."""
+        """The branch name, if HEAD is symbolic, ``None`` when detached.
+
+        E.g. ``"main"`` for ``refs/heads/main``.
+        """
         if self.ref is None:
             return None
         return self.ref.removeprefix("refs/heads/")
@@ -144,7 +147,7 @@ class RefStore:
             existing test construct one with no logger at all.
     """
 
-    def __init__(self, memgit_dir: Path, *, logger: "RefLogger | None" = None) -> None:
+    def __init__(self, memgit_dir: Path, *, logger: RefLogger | None = None) -> None:
         self.memgit_dir = Path(memgit_dir)
         self._logger = logger
 

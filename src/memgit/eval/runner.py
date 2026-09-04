@@ -41,7 +41,7 @@ from memgit.eval.case import (
     ValueIs,
 )
 
-__all__ = ["CheckResult", "CaseResult", "SuiteResult", "run_case", "run_suite"]
+__all__ = ["CaseResult", "CheckResult", "SuiteResult", "run_case", "run_suite"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +53,7 @@ class CheckResult:
     detail: str
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize to the JSON-ready shape the CLI reports."""
         return {"ok": self.ok, "kind": self.kind, "detail": self.detail}
 
 
@@ -65,33 +66,38 @@ class CaseResult:
 
     @property
     def ok(self) -> bool:
+        """True if every check in this case passed."""
         return all(check.ok for check in self.checks)
 
     @property
     def failures(self) -> tuple[CheckResult, ...]:
+        """The checks that did not pass."""
         return tuple(check for check in self.checks if not check.ok)
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize to the JSON-ready shape the CLI reports."""
         return {"case_id": self.case_id, "ok": self.ok, "checks": [c.to_dict() for c in self.checks]}
 
 
 @dataclass(frozen=True, slots=True)
 class SuiteResult:
-    """The outcome of running every case in an :class:`~memgit.eval.case.EvalSuite`
-    at one resolved revision."""
+    """The outcome of running every case in an :class:`~memgit.eval.case.EvalSuite` at one revision."""
 
     rev: str
     cases: tuple[CaseResult, ...]
 
     @property
     def ok(self) -> bool:
+        """True if every case in the suite passed."""
         return all(case.ok for case in self.cases)
 
     @property
     def failed(self) -> tuple[CaseResult, ...]:
+        """The cases that did not pass."""
         return tuple(case for case in self.cases if not case.ok)
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize to the JSON-ready shape the CLI reports."""
         return {"rev": self.rev, "ok": self.ok, "cases": [c.to_dict() for c in self.cases]}
 
 

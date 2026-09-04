@@ -6,16 +6,16 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
 
-from memgit.api.app import create_app  # noqa: E402
-from memgit.core.commit import Commit  # noqa: E402
-from memgit.core.fact import Fact  # noqa: E402
-from memgit.core.repository import Repository  # noqa: E402
+from memgit.api.app import create_app
+from memgit.core.commit import Commit
+from memgit.core.fact import Fact
+from memgit.core.repository import Repository
 
 
 def make_fact(**overrides) -> Fact:
-    defaults = dict(subject="user", predicate="prefers_language", object="Python", confidence=0.9)
+    defaults = {"subject": "user", "predicate": "prefers_language", "object": "Python", "confidence": 0.9}
     defaults.update(overrides)
     return Fact(**defaults)
 

@@ -43,11 +43,11 @@ the ambiguity is surfaced to the caller instead of quietly resolved.
 from __future__ import annotations
 
 import heapq
-from typing import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 
 from memgit.core.commit import Commit
 
-__all__ = ["CommitReader", "walk", "ancestors", "is_ancestor", "merge_base", "merge_bases"]
+__all__ = ["CommitReader", "ancestors", "is_ancestor", "merge_base", "merge_bases", "walk"]
 
 CommitReader = Callable[[str], Commit]
 
@@ -67,7 +67,7 @@ class _Newest:
     def __init__(self, value: str) -> None:
         self.value = value
 
-    def __lt__(self, other: "_Newest") -> bool:
+    def __lt__(self, other: _Newest) -> bool:
         return self.value > other.value
 
     def __eq__(self, other: object) -> bool:

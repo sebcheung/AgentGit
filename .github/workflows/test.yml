@@ -12,3 +12,11 @@ jobs:
       - uses: astral-sh/setup-uv@v3
       - run: uv sync --all-extras
       - run: uv run pytest
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --all-extras
+      - run: uv run ruff check .

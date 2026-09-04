@@ -9,7 +9,7 @@ index.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -20,11 +20,11 @@ from memgit.retrieval.embed import HashingEmbedder
 from memgit.retrieval.index import VectorIndex
 from memgit.retrieval.rank import Retriever, cosine
 
-NOW = datetime(2026, 9, 3, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 3, tzinfo=UTC)
 
 
 def _fact(subject="user", predicate="prefers_language", obj="Python", **kwargs):
-    defaults = dict(confidence=1.0, asserted_at=NOW.isoformat())
+    defaults = {"confidence": 1.0, "asserted_at": NOW.isoformat()}
     defaults.update(kwargs)
     return Fact(subject=subject, predicate=predicate, object=obj, **defaults)
 

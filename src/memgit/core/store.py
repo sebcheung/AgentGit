@@ -32,16 +32,17 @@ from __future__ import annotations
 import hashlib
 import json
 import zlib
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from memgit.core.canonical import canonical_json, hash_payload
 
 __all__ = [
-    "ObjectStore",
+    "AmbiguousPrefixError",
     "CorruptObjectError",
     "ObjectNotFoundError",
-    "AmbiguousPrefixError",
+    "ObjectStore",
     "is_object_hash",
 ]
 

@@ -13,21 +13,21 @@ import pytest
 
 pytest.importorskip("mcp")
 
-from mcp import Client  # noqa: E402
+from mcp import Client
 
-from memgit.core.fact import Fact  # noqa: E402
-from memgit.core.repository import Repository  # noqa: E402
-from memgit.mcp.server import build_server  # noqa: E402
+from memgit.core.fact import Fact
+from memgit.core.repository import Repository
+from memgit.mcp.server import build_server
 
 
 def make_fact(**overrides) -> Fact:
-    defaults = dict(
-        subject="user",
-        predicate="prefers_language",
-        object="Python",
-        confidence=0.9,
-        asserted_at="2026-08-11T12:00:00+00:00",
-    )
+    defaults = {
+        "subject": "user",
+        "predicate": "prefers_language",
+        "object": "Python",
+        "confidence": 0.9,
+        "asserted_at": "2026-08-11T12:00:00+00:00",
+    }
     defaults.update(overrides)
     return Fact(**defaults)
 

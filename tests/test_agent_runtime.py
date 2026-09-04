@@ -10,8 +10,8 @@ from one turn to the next.
 from __future__ import annotations
 
 import pytest
-
 from conftest import ScriptedClient, refusal_message, text_message, tool_use_message
+
 from memgit.agent.client import AgentError
 from memgit.agent.runtime import MemoryAgent
 from memgit.core.fact import Fact

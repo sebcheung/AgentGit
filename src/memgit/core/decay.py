@@ -40,10 +40,11 @@ test deterministic, and what keeps a replay reproducible on a later day.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any
 
 from memgit.core.fact import Fact
 
@@ -146,13 +147,13 @@ class DecayPolicy:
 
     # -- derivation ------------------------------------------------------
 
-    def with_half_life(self, predicate: str, half_life: float | None) -> "DecayPolicy":
+    def with_half_life(self, predicate: str, half_life: float | None) -> DecayPolicy:
         """Return a copy declaring ``predicate``'s half-life."""
         updated = dict(self.half_lives)
         updated[predicate] = half_life
         return DecayPolicy(updated, default=self.default, floor=self.floor)
 
-    def without_half_life(self, predicate: str) -> "DecayPolicy":
+    def without_half_life(self, predicate: str) -> DecayPolicy:
         """Return a copy with ``predicate``'s declaration removed, if any."""
         updated = dict(self.half_lives)
         updated.pop(predicate, None)
@@ -161,6 +162,7 @@ class DecayPolicy:
     # -- serialization -------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize to the JSON-ready shape :meth:`from_dict` expects back."""
         return {
             "version": _VERSION,
             "default": self.default,
@@ -169,7 +171,7 @@ class DecayPolicy:
         }
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, Any]) -> "DecayPolicy":
+    def from_dict(cls, payload: Mapping[str, Any]) -> DecayPolicy:
         """Rebuild a policy from :meth:`to_dict` output.
 
         Strict about shape, matching ``CardinalityMap.from_dict``: an
@@ -191,7 +193,7 @@ class DecayPolicy:
         )
 
     @classmethod
-    def default_map(cls) -> "DecayPolicy":
+    def default_map(cls) -> DecayPolicy:
         """The policy in effect when ``.memgit/decay.json`` does not exist."""
         return cls()
 

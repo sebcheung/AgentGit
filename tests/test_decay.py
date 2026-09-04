@@ -7,14 +7,14 @@ new machinery at all, reaffirmation resetting decay.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from memgit.core.decay import DecayPolicy
 from memgit.core.fact import Fact
 
-NOW = datetime(2026, 9, 3, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 3, tzinfo=UTC)
 
 
 def _fact(predicate="prefers_language", confidence=1.0, age_days=0.0, **kwargs):

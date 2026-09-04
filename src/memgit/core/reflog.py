@@ -1,4 +1,4 @@
-"""The reflog — a journal of every place a ref (or HEAD) has pointed.
+r"""The reflog — a journal of every place a ref (or HEAD) has pointed.
 
 A branch or HEAD only ever remembers where it points *now*; the moment it
 moves, where it used to point is gone unless something wrote it down first.
@@ -47,11 +47,11 @@ from pathlib import Path
 from memgit.core.canonical import utcnow
 
 __all__ = [
-    "RefLogEntry",
+    "ZERO_HASH",
     "RefLog",
+    "RefLogEntry",
     "RefLogger",
     "ReflogNotFoundError",
-    "ZERO_HASH",
 ]
 
 # "Nothing was here before" / "nothing is here now" — git's convention for a
@@ -110,7 +110,7 @@ class RefLogEntry:
         return f"{old_field} {new_field} {self.author} {self.at} {self.op}\t{message}"
 
     @classmethod
-    def parse(cls, line: str) -> "RefLogEntry":
+    def parse(cls, line: str) -> RefLogEntry:
         """Parse one line of :meth:`format` output."""
         line = line.rstrip("\n")
         header, _tab, message = line.partition("\t")
@@ -148,9 +148,11 @@ class RefLog:
 
     @property
     def path(self) -> Path:
+        """The on-disk file this ref's log is (or would be) stored at."""
         return _ref_log_path(self.memgit_dir, self.ref)
 
     def exists(self) -> bool:
+        """True if this ref has ever been logged."""
         return self.path.is_file()
 
     def append(self, entry: RefLogEntry) -> None:
@@ -227,5 +229,6 @@ class RefLogger:
         op: str,
         message: str = "",
     ) -> None:
+        """Record one movement of ``ref`` from ``old`` to ``new``."""
         entry = RefLogEntry(old=old, new=new, author=self.author, at=utcnow(), op=op, message=message)
         RefLog(self.memgit_dir, ref).append(entry)

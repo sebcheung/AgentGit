@@ -31,8 +31,9 @@ slicing a state up, provenance can no longer vouch for what's left.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Collection, Iterable, Iterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Collection, Iterable, Iterator
+from typing import TYPE_CHECKING, Any
 
 from memgit.core.fact import Fact, FactKey
 from memgit.core.tree import Tree
@@ -68,8 +69,8 @@ class MemoryState:
 
     @classmethod
     def from_tree(
-        cls, tree: Tree, read_fact: "FactReader", *, commit: str | None = None
-    ) -> "MemoryState":
+        cls, tree: Tree, read_fact: FactReader, *, commit: str | None = None
+    ) -> MemoryState:
         """Materialize every fact ``tree`` references.
 
         Args:
@@ -81,13 +82,13 @@ class MemoryState:
         return cls(facts=tuple(read_fact(h) for h in tree.fact_hashes()), tree=tree.hash, commit=commit)
 
     @classmethod
-    def from_facts(cls, facts: Iterable[Fact], *, commit: str | None = None) -> "MemoryState":
+    def from_facts(cls, facts: Iterable[Fact], *, commit: str | None = None) -> MemoryState:
         """Build a state directly from facts, e.g. ones not yet committed."""
         fact_tuple = tuple(facts)
         return cls(facts=fact_tuple, tree=Tree.from_facts(fact_tuple).hash, commit=commit)
 
     @classmethod
-    def empty(cls) -> "MemoryState":
+    def empty(cls) -> MemoryState:
         """The state of believing nothing — no facts, no commit."""
         return cls(facts=(), tree=Tree(()).hash, commit=None)
 
@@ -114,8 +115,11 @@ class MemoryState:
     # -- lookup ------------------------------------------------------------
 
     def get(self, subject: str, predicate: str) -> tuple[Fact, ...]:
-        """Every fact at this key — plural, since a key can hold more than one
-        belief (see ``tree.py``'s cardinality discussion)."""
+        """Every fact at this key.
+
+        Plural, since a key can hold more than one belief (see ``tree.py``'s
+        cardinality discussion).
+        """
         return tuple(fact for fact in self.facts if fact.subject == subject and fact.predicate == predicate)
 
     def one(self, subject: str, predicate: str) -> Fact | None:
@@ -133,9 +137,11 @@ class MemoryState:
         return max(candidates, key=lambda f: (f.confidence, f.asserted_at, f.hash))
 
     def by_subject(self, subject: str) -> tuple[Fact, ...]:
+        """Every fact about ``subject``, regardless of predicate."""
         return tuple(fact for fact in self.facts if fact.subject == subject)
 
     def by_predicate(self, predicate: str) -> tuple[Fact, ...]:
+        """Every fact asserted with ``predicate``, regardless of subject."""
         return tuple(fact for fact in self.facts if fact.predicate == predicate)
 
     # -- derivation --------------------------------------------------------
@@ -146,7 +152,7 @@ class MemoryState:
         min_confidence: float = 0.0,
         subjects: Collection[str] | None = None,
         predicates: Collection[str] | None = None,
-    ) -> "MemoryState":
+    ) -> MemoryState:
         """Return a new state holding only facts that pass every given test.
 
         ``min_confidence`` compares *stored* confidence, not decayed
@@ -165,7 +171,7 @@ class MemoryState:
         )
         return MemoryState.from_facts(kept)
 
-    def without(self, key: FactKey) -> "MemoryState":
+    def without(self, key: FactKey) -> MemoryState:
         """Return a new state with every fact at ``key`` removed.
 
         What slice 6's ablation engine calls to drop one belief entirely
@@ -175,7 +181,7 @@ class MemoryState:
         kept = tuple(fact for fact in self.facts if fact.key != (subject, predicate))
         return MemoryState.from_facts(kept)
 
-    def without_fact(self, fact_hash: str) -> "MemoryState":
+    def without_fact(self, fact_hash: str) -> MemoryState:
         """Return a new state with the single fact ``fact_hash`` removed.
 
         The finer-grained sibling of :meth:`without`: drops one value at a

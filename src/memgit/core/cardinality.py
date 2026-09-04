@@ -32,9 +32,10 @@ this project exists to catch.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 
 __all__ = ["Cardinality", "CardinalityMap"]
 
@@ -77,6 +78,7 @@ class CardinalityMap:
         return self.predicates.get(predicate, self.default)
 
     def is_multi(self, predicate: str) -> bool:
+        """True if ``predicate`` is declared (or defaulted to) ``"multi"``."""
         return self[predicate] == "multi"
 
     def declared(self) -> tuple[tuple[str, Cardinality], ...]:
@@ -100,6 +102,7 @@ class CardinalityMap:
     # -- serialization -------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize to the JSON-ready shape :meth:`from_dict` expects back."""
         return {
             "version": _VERSION,
             "default": self.default,

@@ -19,13 +19,13 @@ from memgit.core.tree import EMPTY_TREE_HASH
 
 
 def make_fact(**overrides) -> Fact:
-    defaults = dict(
-        subject="user",
-        predicate="prefers_language",
-        object="Python",
-        confidence=0.9,
-        asserted_at="2026-08-11T12:00:00+00:00",
-    )
+    defaults = {
+        "subject": "user",
+        "predicate": "prefers_language",
+        "object": "Python",
+        "confidence": 0.9,
+        "asserted_at": "2026-08-11T12:00:00+00:00",
+    }
     defaults.update(overrides)
     return Fact(**defaults)
 

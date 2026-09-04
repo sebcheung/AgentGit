@@ -36,8 +36,9 @@ fact about how the tree is shaped. That question is answered by
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Iterable, Iterator
+from typing import TYPE_CHECKING, Any
 
 from memgit.core.canonical import hash_payload
 from memgit.core.fact import Fact, FactKey
@@ -46,7 +47,7 @@ from memgit.core.store import is_object_hash
 if TYPE_CHECKING:
     from memgit.core.store import ObjectStore
 
-__all__ = ["Tree", "TreeEntry", "EMPTY_TREE_HASH"]
+__all__ = ["EMPTY_TREE_HASH", "Tree", "TreeEntry"]
 
 # (subject, predicate, fact_hashes) — the hashes are already sorted and deduped
 # by the time an entry exists on a Tree.
@@ -57,8 +58,7 @@ _RawHashes = str | Iterable[str]
 
 @dataclass(frozen=True, slots=True)
 class Tree:
-    """An immutable, content-addressed snapshot of ``(subject, predicate)``
-    keys to the fact hashes asserted for them.
+    """An immutable, content-addressed snapshot mapping ``(subject, predicate)`` keys to fact hashes.
 
     Construct via :meth:`from_facts` or :meth:`from_entries` — the bare
     constructor takes already-normalized entries and does not re-validate or
@@ -171,16 +171,16 @@ class Tree:
         """This tree's content address in the object store."""
         return hash_payload(self.to_dict())
 
-    def write(self, store: "ObjectStore") -> str:
+    def write(self, store: ObjectStore) -> str:
         """Store this tree; return its hash."""
         return store.put(self.to_dict())
 
     @classmethod
-    def read(cls, store: "ObjectStore", tree_hash: str) -> Tree:
+    def read(cls, store: ObjectStore, tree_hash: str) -> Tree:
         """Load and validate the tree stored at ``tree_hash``."""
         return cls.from_dict(store.get(tree_hash))
 
-    def load(self, store: "ObjectStore") -> list[Fact]:
+    def load(self, store: ObjectStore) -> list[Fact]:
         """Materialize every fact this tree references.
 
         What ``show`` and ``ls-tree`` build on: reading a tree is cheap (one

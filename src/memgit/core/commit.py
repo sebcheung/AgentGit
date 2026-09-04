@@ -30,8 +30,9 @@ new, addressable event, not something that collapses into the old one.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any
 
 from memgit.core.canonical import canonical_json, hash_payload, utcnow
 from memgit.core.store import is_object_hash
@@ -179,12 +180,12 @@ class Commit:
             metadata=payload.get("metadata"),
         )
 
-    def write(self, store: "ObjectStore") -> str:
+    def write(self, store: ObjectStore) -> str:
         """Store this commit; return its hash."""
         return store.put(self.to_dict())
 
     @classmethod
-    def read(cls, store: "ObjectStore", commit_hash: str) -> Commit:
+    def read(cls, store: ObjectStore, commit_hash: str) -> Commit:
         """Load and validate the commit stored at ``commit_hash``."""
         return cls.from_dict(store.get(commit_hash))
 

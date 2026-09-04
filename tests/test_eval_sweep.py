@@ -17,7 +17,7 @@ def _suite(*cases: EvalCase) -> EvalSuite:
 class TestSweep:
     def test_finds_first_breaking_commit(self, agent_repo):
         commit_a = agent_repo.commit([Fact(subject="user", predicate="city", object="Boston")], "a")
-        commit_b = agent_repo.commit([Fact(subject="user", predicate="city", object="Boston")], "b")
+        agent_repo.commit([Fact(subject="user", predicate="city", object="Boston")], "b")
         commit_c = agent_repo.commit([Fact(subject="user", predicate="city", object="Berlin")], "c")
 
         case = EvalCase(id="knows-city", checks=(ValueIs("user", "city", "Boston"),))

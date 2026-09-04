@@ -1,4 +1,4 @@
-"""Repository — owns the on-disk ``.memgit`` layout end to end.
+r"""Repository — owns the on-disk ``.memgit`` layout end to end.
 
 Everything below this module (``ObjectStore``, ``Tree``, ``Commit``,
 ``RefStore``, ``graph``) is deliberately ignorant of directory names and of
@@ -56,9 +56,10 @@ the evidence, which is why ``rewind`` exists at all rather than only
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping, Sequence
+from typing import Any
 
 from memgit.core.cardinality import CardinalityMap
 from memgit.core.commit import Commit
@@ -68,9 +69,6 @@ from memgit.core.fact import Fact, FactKey
 from memgit.core.graph import merge_base, walk
 from memgit.core.reflog import RefLog, RefLogEntry, RefLogger, ReflogNotFoundError
 from memgit.core.refs import Head, RefStore
-from memgit.retrieval.embed import Embedder, default_embedder
-from memgit.retrieval.index import VectorIndex
-from memgit.retrieval.rank import Retriever
 from memgit.core.revparse import AncestryError, RevSyntaxError, apply_steps, parse_revision
 from memgit.core.staging import (
     StagingArea,
@@ -79,8 +77,10 @@ from memgit.core.staging import (
     open_staging,
     read_staging,
     session_key,
-    stage as _stage_facts,
     touched_keys,
+)
+from memgit.core.staging import (
+    stage as _stage_facts,
 )
 from memgit.core.state import MemoryState
 from memgit.core.store import (
@@ -90,14 +90,17 @@ from memgit.core.store import (
     is_object_hash,
 )
 from memgit.core.tree import EMPTY_TREE_HASH, Tree
+from memgit.retrieval.embed import Embedder, default_embedder
+from memgit.retrieval.index import VectorIndex
+from memgit.retrieval.rank import Retriever
 
 __all__ = [
-    "Repository",
     "CheckoutResult",
+    "EmptyCommitError",
     "NotARepositoryError",
+    "Repository",
     "RepositoryExistsError",
     "RevisionNotFoundError",
-    "EmptyCommitError",
 ]
 
 
@@ -117,10 +120,12 @@ class CheckoutResult:
 
     @property
     def detached(self) -> bool:
+        """True if the checkout landed on a detached HEAD."""
         return self.head.is_detached
 
     @property
     def moved(self) -> bool:
+        """True if HEAD actually points somewhere new."""
         return self.previous.commit != self.head.commit
 
 _CONFIG_NAME = "config"
@@ -176,7 +181,7 @@ class Repository:
     # -- construction --------------------------------------------------------
 
     @classmethod
-    def init(cls, path: Path | str = ".", *, default_branch: str = "main") -> "Repository":
+    def init(cls, path: Path | str = ".", *, default_branch: str = "main") -> Repository:
         """Create a new repository at ``path/.memgit``.
 
         Raises:
@@ -200,7 +205,7 @@ class Repository:
         return repo
 
     @classmethod
-    def open(cls, path: Path | str) -> "Repository":
+    def open(cls, path: Path | str) -> Repository:
         """Open the repository whose ``.memgit`` directory is exactly ``path``."""
         memgit_dir = Path(path).resolve()
         if not memgit_dir.is_dir() or not (memgit_dir / _HEAD_NAME).is_file():
@@ -208,7 +213,7 @@ class Repository:
         return cls(memgit_dir)
 
     @classmethod
-    def discover(cls, start: Path | str | None = None) -> "Repository":
+    def discover(cls, start: Path | str | None = None) -> Repository:
         """Walk upward from ``start`` (default: cwd) looking for ``.memgit``.
 
         Mirrors how git commands work from any subdirectory of a checkout.
@@ -232,12 +237,14 @@ class Repository:
 
     @property
     def store(self) -> ObjectStore:
+        """This repository's object store, opened lazily and cached."""
         if self._store is None:
             self._store = ObjectStore(self.memgit_dir / "objects")
         return self._store
 
     @property
     def refs(self) -> RefStore:
+        """This repository's ref store, opened lazily and cached."""
         if self._refs is None:
             author = self.config().get("author", "unknown")
             logger = RefLogger(self.memgit_dir, author=author)
@@ -254,12 +261,15 @@ class Repository:
     # -- HEAD and branches -----------------------------------------------
 
     def head(self) -> Head:
+        """The current :class:`Head` — branch/detached state and commit."""
         return self.refs.read_head()
 
     def head_commit(self) -> str | None:
+        """The commit HEAD resolves to, or ``None`` on an unborn branch."""
         return self.head().commit
 
     def current_branch(self) -> str | None:
+        """The branch HEAD points at, or ``None`` if detached."""
         return self.head().branch
 
     def resolve(self, revision: str = "HEAD") -> str:
@@ -349,6 +359,7 @@ class Repository:
     # -- reading -----------------------------------------------------------
 
     def read_commit(self, rev: str) -> Commit:
+        """Resolve ``rev`` and load the :class:`Commit` object it names."""
         return Commit.read(self.store, self.resolve(rev))
 
     def read_tree(self, rev: str) -> Tree:
@@ -665,7 +676,7 @@ class Repository:
         *,
         create: str | None = None,
         detach: bool = False,
-    ) -> "CheckoutResult":
+    ) -> CheckoutResult:
         """Move HEAD to ``revision``.
 
         See the module docstring for why this is *only* a HEAD move: no
@@ -848,9 +859,10 @@ class Repository:
         return name if name.startswith("refs/") else f"refs/heads/{name}"
 
     def staging_area(self, key: str) -> StagingArea | None:
-        """The staging area at hashed key ``key`` (see
-        :func:`~memgit.core.staging.session_key`), or ``None`` if nothing is
-        staged there. Read-only — never opens one; see :meth:`stage`.
+        """The staging area at hashed key ``key``, or ``None`` if nothing is staged there.
+
+        ``key`` is the hash :func:`~memgit.core.staging.session_key` produces.
+        Read-only — never opens one; see :meth:`stage`.
         """
         return read_staging(self, key)
 
@@ -863,9 +875,9 @@ class Repository:
         drop_staging(self, key)
 
     def open_staging(self, session_id: str, *, branch: str | None = None) -> StagingArea:
-        """Return ``session_id``'s staging area, opening it against
-        ``branch``'s current tip if this is the session's first write.
+        """Return ``session_id``'s staging area, opening one if it doesn't exist yet.
 
+        A freshly opened area starts against ``branch``'s current tip.
         ``session_id`` is the caller's own identifier (an MCP transport
         session id, typically); it is hashed via
         :func:`~memgit.core.staging.session_key` before ever touching a ref
@@ -881,8 +893,9 @@ class Repository:
     def stage(
         self, session_id: str, facts: Iterable[Fact], *, based_on: str
     ) -> StagingArea:
-        """Replace ``session_id``'s staged fact set with ``facts`` (the whole
-        set, not a delta — matching :meth:`commit`'s own contract).
+        """Replace ``session_id``'s staged fact set with ``facts``.
+
+        The whole set, not a delta — matching :meth:`commit`'s own contract.
 
         Args:
             based_on: The tree hash ``facts`` were folded against — a
@@ -912,8 +925,7 @@ class Repository:
         author: str = "unknown",
         metadata: Mapping[str, Any] | None = None,
     ) -> str | None:
-        """Commit ``session_id``'s staged facts onto ``branch``; drop the
-        staging area either way.
+        """Commit ``session_id``'s staged facts onto ``branch``; drop the staging area either way.
 
         Sealing does **not** commit the staged tree wholesale: if the target
         branch has moved since staging began, doing so would silently
@@ -950,8 +962,7 @@ class Repository:
         author: str = "unknown",
         metadata: Mapping[str, Any] | None = None,
     ) -> str | None:
-        """:meth:`seal_staging`, keyed directly by an already-hashed staging
-        key rather than a raw session id.
+        """:meth:`seal_staging`, keyed directly by an already-hashed staging key.
 
         For ``memgit staging commit <key>`` — the CLI never has the MCP
         session's raw id, only the hashed key ``memgit staging`` already

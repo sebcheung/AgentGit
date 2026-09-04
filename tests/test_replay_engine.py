@@ -9,7 +9,10 @@ own isolation (no bleed-through from the baseline run).
 
 from __future__ import annotations
 
+from datetime import UTC
+
 from conftest import ScriptedClient, text_message, tool_use_message
+
 from memgit.core.fact import Fact
 from memgit.core.state import MemoryState
 from memgit.replay.engine import ablate_and_replay, replay_query
@@ -85,7 +88,7 @@ class TestAblateAndReplay:
             responses=[text_message("You prefer Python."), text_message("I don't know.")]
         )
 
-        result = ablate_and_replay(
+        ablate_and_replay(
             repo, "HEAD", ("user", "prefers_language"), "what do I prefer?", client=client
         )
 
@@ -221,10 +224,10 @@ class TestPinnedRetrieval:
         assert len(ablated_lines) == len(baseline_lines) - 1
 
     def test_fixed_as_of_makes_retrieval_reproducible(self, agent_repo):
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         repo = self._committed_repo_with_many_facts(agent_repo)
-        moment = datetime(2027, 1, 1, tzinfo=timezone.utc)
+        moment = datetime(2027, 1, 1, tzinfo=UTC)
         client = ScriptedClient(
             responses=[text_message("a"), text_message("b")]
         )

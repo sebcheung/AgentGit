@@ -26,13 +26,13 @@ from memgit.core.tree import EMPTY_TREE_HASH
 
 
 def make_fact(**overrides) -> Fact:
-    defaults = dict(
-        subject="user",
-        predicate="prefers_language",
-        object="Python",
-        confidence=0.9,
-        asserted_at="2026-08-11T12:00:00+00:00",
-    )
+    defaults = {
+        "subject": "user",
+        "predicate": "prefers_language",
+        "object": "Python",
+        "confidence": 0.9,
+        "asserted_at": "2026-08-11T12:00:00+00:00",
+    }
     defaults.update(overrides)
     return Fact(**defaults)
 
@@ -426,7 +426,7 @@ class TestCheckout:
         assert repo.branches()["topic"] == repo.head_commit()
 
     def test_checkout_create_on_an_unborn_repository_leaves_it_unborn(self, repo):
-        result = repo.checkout("HEAD", create="topic")
+        repo.checkout("HEAD", create="topic")
         assert repo.current_branch() == "topic"
         assert repo.head_commit() is None
         assert "topic" not in repo.branches()  # no ref file yet — still unborn

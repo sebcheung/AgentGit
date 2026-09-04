@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from memgit.core.reflog import RefLog, RefLogEntry, RefLogger, ReflogNotFoundError, ZERO_HASH
+from memgit.core.reflog import ZERO_HASH, RefLog, RefLogEntry, RefLogger, ReflogNotFoundError
 
 COMMIT_A = "a" * 64
 COMMIT_B = "b" * 64
@@ -99,7 +99,7 @@ class TestRefLog:
 
     def test_rejects_a_ref_that_is_neither_head_nor_under_refs(self, tmp_path):
         with pytest.raises(ValueError):
-            RefLog(tmp_path, "heads/main").path
+            _ = RefLog(tmp_path, "heads/main").path
 
 
 class TestRefLogAtIndex:

@@ -19,15 +19,15 @@ from memgit.eval.runner import CaseResult, CheckResult, SuiteResult, run_case, r
 from memgit.eval.sweep import FirstFailure, sweep
 
 __all__ = [
-    "EvalCase",
-    "EvalSuite",
-    "EvalFormatError",
-    "load_suites",
-    "CheckResult",
     "CaseResult",
+    "CheckResult",
+    "EvalCase",
+    "EvalFormatError",
+    "EvalSuite",
+    "FirstFailure",
     "SuiteResult",
+    "load_suites",
     "run_case",
     "run_suite",
-    "FirstFailure",
     "sweep",
 ]

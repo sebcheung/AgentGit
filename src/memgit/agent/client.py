@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from anthropic.types import Message
 
-__all__ = ["LLMClient", "AnthropicClient", "AgentError", "default_client"]
+__all__ = ["AgentError", "AnthropicClient", "LLMClient", "default_client"]
 
 
 class AgentError(Exception):
@@ -57,7 +57,9 @@ class LLMClient(Protocol):
         system: list[dict[str, Any]],
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
-    ) -> "Message": ...
+    ) -> Message:
+        """Send one request, get back one SDK-native ``Message``."""
+        ...
 
 
 class AnthropicClient:
@@ -91,7 +93,8 @@ class AnthropicClient:
         system: list[dict[str, Any]],
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
-    ) -> "Message":
+    ) -> Message:
+        """See :meth:`LLMClient.create_message`."""
         import anthropic
 
         try:

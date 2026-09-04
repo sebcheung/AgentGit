@@ -1,4 +1,4 @@
-"""Eval cases: declarative, closed-vocabulary assertions about a memory.
+r"""Eval cases: declarative, closed-vocabulary assertions about a memory.
 
 An eval case is a suite author's yardstick — "at this revision, the agent
 should still believe X" — expressed as one or more :data:`Check`\\ s. Every
@@ -27,10 +27,11 @@ this module, not registering a plugin.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping, Union
+from typing import TYPE_CHECKING, Any
 
 from memgit.core.diff import ChangeKind
 
@@ -38,19 +39,19 @@ if TYPE_CHECKING:
     from memgit.core.repository import Repository
 
 __all__ = [
-    "KeyExists",
-    "KeyAbsent",
-    "ValueIs",
+    "SUITE_SUBDIR",
+    "Check",
     "ConfidenceAtLeast",
     "DiffKind",
+    "EvalCase",
+    "EvalFormatError",
+    "EvalSuite",
+    "KeyAbsent",
+    "KeyExists",
     "NoViolations",
     "Recalls",
-    "Check",
-    "EvalCase",
-    "EvalSuite",
-    "EvalFormatError",
+    "ValueIs",
     "load_suites",
-    "SUITE_SUBDIR",
 ]
 
 SUITE_SUBDIR = "eval"
@@ -100,10 +101,10 @@ class ValueIs:
 
 @dataclass(frozen=True, slots=True)
 class ConfidenceAtLeast:
-    """The key's most-trustworthy fact (:meth:`MemoryState.one`) has stored
-    confidence at least ``min``.
+    """The key's most-trustworthy fact has stored confidence at least ``min``.
 
-    Stored confidence, never decayed — decay is a read-time lens the
+    The most-trustworthy fact is :meth:`MemoryState.one`'s pick. Stored
+    confidence, never decayed — decay is a read-time lens the
     retrieval ranker and ``--as-of`` display apply, and a regression check
     that moved every day without a memory change would be worse than useless.
     """
@@ -115,8 +116,7 @@ class ConfidenceAtLeast:
 
 @dataclass(frozen=True, slots=True)
 class DiffKind:
-    """The revision's diff against its first parent classified this key as
-    one of ``kinds``.
+    """The revision's diff against its first parent classified this key as one of ``kinds``.
 
     Reuses ``diff.py``'s eight-kind taxonomy verbatim: "did this commit
     record a ``contradicted`` at ``(user, city)``" is a discrete, stable
@@ -135,8 +135,7 @@ class NoViolations:
 
 @dataclass(frozen=True, slots=True)
 class Recalls:
-    """Retrieving ``query`` at this revision surfaces ``(subject, predicate)``
-    within the top ``k``.
+    """Retrieving ``query`` at this revision surfaces ``(subject, predicate)`` within the top ``k``.
 
     ``as_of`` is required, not defaulted to "now": ``HashingEmbedder`` is
     deterministic but decayed confidence is not, so a case without a pinned
@@ -152,7 +151,7 @@ class Recalls:
     k: int = 8
 
 
-Check = Union[KeyExists, KeyAbsent, ValueIs, ConfidenceAtLeast, DiffKind, NoViolations, Recalls]
+Check = KeyExists | KeyAbsent | ValueIs | ConfidenceAtLeast | DiffKind | NoViolations | Recalls
 
 # kind -> (class, required field names, optional field names)
 _CHECK_FIELDS: dict[str, tuple[type, frozenset[str], frozenset[str]]] = {
@@ -221,7 +220,8 @@ class EvalCase:
     description: str | None = None
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, Any]) -> "EvalCase":
+    def from_dict(cls, payload: Mapping[str, Any]) -> EvalCase:
+        """Parse one case from its JSON shape. Strict: unknown keys are an error."""
         if not isinstance(payload, Mapping):
             raise EvalFormatError(f"a case must be a JSON object, got {type(payload).__name__}")
         unknown = payload.keys() - _CASE_FIELDS
@@ -246,7 +246,7 @@ class EvalCase:
 
 @dataclass(frozen=True, slots=True)
 class EvalSuite:
-    """A named group of :class:`EvalCase`\\ s, loaded from one JSON file."""
+    r"""A named group of :class:`EvalCase`\\ s, loaded from one JSON file."""
 
     name: str
     cases: tuple[EvalCase, ...]
@@ -258,7 +258,8 @@ class EvalSuite:
         return len(self.cases)
 
     @classmethod
-    def from_dict(cls, name: str, payload: Mapping[str, Any]) -> "EvalSuite":
+    def from_dict(cls, name: str, payload: Mapping[str, Any]) -> EvalSuite:
+        """Parse a whole suite from its JSON shape. Strict: unknown keys are an error."""
         if not isinstance(payload, Mapping):
             raise EvalFormatError(f"suite {name!r} must be a JSON object, got {type(payload).__name__}")
         unknown = payload.keys() - _SUITE_FIELDS
@@ -295,7 +296,7 @@ def _load_suite_file(path: Path) -> EvalSuite:
     return EvalSuite.from_dict(path.stem, payload)
 
 
-def load_suites(repo: "Repository", path: Path | None = None) -> tuple[EvalSuite, ...]:
+def load_suites(repo: Repository, path: Path | None = None) -> tuple[EvalSuite, ...]:
     """Load every declared suite for ``repo``.
 
     Args:

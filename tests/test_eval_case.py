@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -71,7 +71,7 @@ class TestCheckDecoding:
         (check,) = case.checks
         assert isinstance(check, Recalls)
         assert check.k == 3
-        assert check.as_of == datetime(2026, 1, 1, tzinfo=timezone.utc)
+        assert check.as_of == datetime(2026, 1, 1, tzinfo=UTC)
 
     def test_recalls_defaults_k(self):
         payload = {

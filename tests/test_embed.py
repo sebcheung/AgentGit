@@ -17,6 +17,7 @@ import pytest
 from memgit.core.fact import Fact
 from memgit.retrieval.embed import (
     Embedder,
+    EmbedderError,
     HashingEmbedder,
     UnknownEmbedderError,
     default_embedder,
@@ -25,7 +26,7 @@ from memgit.retrieval.embed import (
 
 
 def _fact(**overrides):
-    defaults = dict(subject="user", predicate="prefers_language", object="Python", confidence=0.9)
+    defaults = {"subject": "user", "predicate": "prefers_language", "object": "Python", "confidence": 0.9}
     defaults.update(overrides)
     return Fact(**defaults)
 
@@ -70,7 +71,7 @@ class TestHashingEmbedder:
         assert HashingEmbedder(dim=128).id == HashingEmbedder(dim=128).id
 
     def test_rejects_non_positive_dim(self):
-        with pytest.raises(Exception):
+        with pytest.raises(EmbedderError):
             HashingEmbedder(dim=0)
 
     def test_deterministic_across_processes(self):

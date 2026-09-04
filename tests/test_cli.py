@@ -307,7 +307,7 @@ class TestCheckout:
 
     def test_checkout_a_branch_reattaches(self, tmp_path):
         _init_and_commit(tmp_path)
-        second = _second_commit(tmp_path)
+        _second_commit(tmp_path)
         runner.invoke(app, ["checkout", "HEAD~1"])
         result = runner.invoke(app, ["checkout", "main"])
         assert result.exit_code == 0

@@ -33,11 +33,12 @@ from __future__ import annotations
 import hashlib
 import math
 import re
-from typing import Protocol, Sequence, runtime_checkable
+from collections.abc import Sequence
+from typing import Protocol, runtime_checkable
 
 from memgit.core.fact import Fact
 
-__all__ = ["Embedder", "HashingEmbedder", "embed_text", "default_embedder", "EmbedderError", "UnknownEmbedderError"]
+__all__ = ["Embedder", "EmbedderError", "HashingEmbedder", "UnknownEmbedderError", "default_embedder", "embed_text"]
 
 
 class EmbedderError(Exception):
@@ -126,13 +127,16 @@ class HashingEmbedder:
 
     @property
     def id(self) -> str:
+        """See :attr:`Embedder.id` — encodes the scheme and dimension."""
         return f"{self._PREFIX}/{self._dim}"
 
     @property
     def dim(self) -> int:
+        """See :attr:`Embedder.dim`."""
         return self._dim
 
     def embed(self, text: str) -> tuple[float, ...]:
+        """See :meth:`Embedder.embed` — feature-hashes tokens into buckets."""
         vector = [0.0] * self._dim
         for token in _tokens(text):
             digest = hashlib.sha256(token.encode("utf-8")).digest()
@@ -146,6 +150,7 @@ class HashingEmbedder:
         return tuple(v / norm for v in vector)
 
     def embed_batch(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]:
+        """See :meth:`Embedder.embed_batch`."""
         return tuple(self.embed(text) for text in texts)
 
     def __repr__(self) -> str:

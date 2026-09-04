@@ -7,7 +7,7 @@ paying off turn after turn, and block 1 must carry everything that changes.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from memgit.agent.prompt import build_system_prompt
 from memgit.core.cardinality import CardinalityMap
@@ -18,11 +18,11 @@ from memgit.retrieval.embed import HashingEmbedder
 from memgit.retrieval.index import VectorIndex
 from memgit.retrieval.rank import Retriever
 
-NOW = datetime(2026, 9, 3, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 3, tzinfo=UTC)
 
 
 def fact(**overrides) -> Fact:
-    defaults = dict(subject="user", predicate="prefers_language", object="Python", confidence=0.9)
+    defaults = {"subject": "user", "predicate": "prefers_language", "object": "Python", "confidence": 0.9}
     defaults.update(overrides)
     return Fact(**defaults)
 
