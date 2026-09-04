@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from memgit import __version__
 from memgit.api.errors import register_exception_handlers
 from memgit.api.read import router as read_router
+from memgit.api.replay import router as replay_router
 from memgit.core.repository import Repository
 
 __all__ = ["create_app"]
@@ -42,6 +43,7 @@ def create_app(repo: Repository, *, model: str = "claude-opus-5", static: bool =
 
     register_exception_handlers(app)
     app.include_router(read_router, prefix="/api")
+    app.include_router(replay_router, prefix="/api")
 
     if static:
         # `/api/*` is registered above, before this mount -- a Starlette
