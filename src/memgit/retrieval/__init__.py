@@ -16,5 +16,18 @@ per PLAN.md's repo conventions.
 from __future__ import annotations
 
 from memgit.retrieval.embed import Embedder, HashingEmbedder, default_embedder, embed_text
+from memgit.retrieval.index import VectorIndex, VectorIndexError
+from memgit.retrieval.rank import RetrievalResult, Retrieved, Retriever, cosine
 
-__all__ = ["Embedder", "HashingEmbedder", "default_embedder", "embed_text"]
+__all__ = [
+    "Embedder",
+    "HashingEmbedder",
+    "default_embedder",
+    "embed_text",
+    "VectorIndex",
+    "VectorIndexError",
+    "RetrievalResult",
+    "Retrieved",
+    "Retriever",
+    "cosine",
+]
