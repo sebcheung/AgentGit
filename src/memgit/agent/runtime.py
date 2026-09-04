@@ -6,7 +6,10 @@ owns three things:
 1. **The loop.** A hand-written ``while stop_reason == "tool_use"`` over
    :class:`~memgit.agent.client.LLMClient`, not the SDK's beta
    ``tool_runner`` — no beta dependency, and every step is visible code
-   rather than something a fake has to reverse-engineer.
+   rather than something a fake has to reverse-engineer. :func:`run_tool_loop`
+   is that loop pulled out as a free function, independent of ``Repository``,
+   so slice 6's replay engine can run the exact same tool-calling behavior
+   against a state it never intends to commit.
 2. **The commit protocol.** :meth:`Repository.commit` takes the *whole* fact
    set, never a delta (the no-index decision in PLAN.md), so one turn
    mutates a working copy of the state the model was shown and hands the
@@ -40,7 +43,7 @@ from memgit.core.cardinality import CardinalityMap
 from memgit.core.repository import Repository
 from memgit.core.state import MemoryState
 
-__all__ = ["MemoryAgent", "TurnResult", "ToolCallRecord", "AgentError"]
+__all__ = ["MemoryAgent", "TurnResult", "ToolCallRecord", "AgentError", "run_tool_loop"]
 
 _MESSAGE_LIMIT = 72
 
@@ -107,6 +110,91 @@ def _merge_forget(state: MemoryState, call: ForgetCall) -> MemoryState:
         if fact.object == call.object:
             result = result.without_fact(fact.hash)
     return result
+
+
+def run_tool_loop(
+    client: LLMClient,
+    system: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+    working: MemoryState,
+    cardinality: CardinalityMap,
+    *,
+    source: str,
+    max_tool_rounds: int,
+) -> tuple[Any, MemoryState, list[ToolCallRecord]]:
+    """Run one turn's tool-calling loop to completion.
+
+    Mutates ``messages`` in place (appending each round, same as
+    :meth:`MemoryAgent.turn` always has) and returns the final response, the
+    resulting :class:`MemoryState`, and every tool call made along the way.
+    Independent of ``Repository`` — nothing here commits anything — which is
+    exactly what lets slice 6's replay engine reuse it against a state it
+    only intends to explore.
+
+    Raises:
+        AgentError: the model refused, or the loop exceeded
+            ``max_tool_rounds``.
+    """
+    tool_calls: list[ToolCallRecord] = []
+    rounds = 0
+
+    while True:
+        response = client.create_message(system=system, messages=messages, tools=list(TOOL_SCHEMAS))
+
+        if response.stop_reason == "refusal":
+            details = response.stop_details
+            category = getattr(details, "category", None)
+            explanation = getattr(details, "explanation", None)
+            raise AgentError(f"the model refused ({category}): {explanation}")
+
+        if response.stop_reason != "tool_use":
+            break
+
+        rounds += 1
+        if rounds > max_tool_rounds:
+            raise AgentError(f"tool-calling loop exceeded {max_tool_rounds} rounds")
+
+        messages.append({"role": "assistant", "content": response.content})
+        results: list[dict[str, Any]] = []
+        for block in response.content:
+            if block.type != "tool_use":
+                continue
+            record, result_block, working = _apply_tool_call(block, working, cardinality, source=source)
+            tool_calls.append(record)
+            results.append(result_block)
+        messages.append({"role": "user", "content": results})
+
+    messages.append({"role": "assistant", "content": response.content})
+    return response, working, tool_calls
+
+
+def _apply_tool_call(
+    block: Any, working: MemoryState, cardinality: CardinalityMap, *, source: str
+) -> tuple[ToolCallRecord, dict[str, Any], MemoryState]:
+    """Decode and apply one ``tool_use`` block; never raises.
+
+    A ``ToolCallError`` (an invalid fact, an unknown tool name) becomes
+    an ``is_error`` tool result instead of aborting the turn, so the
+    model gets a chance to correct itself on the next round.
+    """
+    try:
+        if block.name == "remember":
+            call = decode_remember(block.input, source=source)
+            working = _merge_remember(working, call, cardinality)
+            content = f"remembered {call.fact.subject} {call.fact.predicate} {call.fact.object}"
+        elif block.name == "forget":
+            call = decode_forget(block.input)
+            working = _merge_forget(working, call)
+            target = call.key[0] + " " + call.key[1]
+            content = f"forgot {target}" + (f"={call.object}" if call.object else " (all values)")
+        else:
+            raise ToolCallError(f"unknown tool {block.name!r}")
+    except ToolCallError as exc:
+        result = {"type": "tool_result", "tool_use_id": block.id, "content": str(exc), "is_error": True}
+        return ToolCallRecord(name=block.name, input=block.input, ok=False), result, working
+
+    result = {"type": "tool_result", "tool_use_id": block.id, "content": content}
+    return ToolCallRecord(name=block.name, input=block.input, ok=True), result, working
 
 
 def _summarize(user_message: str, *, limit: int = _MESSAGE_LIMIT) -> str:
@@ -184,39 +272,16 @@ class MemoryAgent:
         system = build_system_prompt(before, cardinality, head=head)
 
         self._messages.append({"role": "user", "content": user_message})
-        working = before
-        tool_calls: list[ToolCallRecord] = []
-        rounds = 0
-
-        while True:
-            response = self.client.create_message(
-                system=system, messages=self._messages, tools=list(TOOL_SCHEMAS)
-            )
-
-            if response.stop_reason == "refusal":
-                details = response.stop_details
-                category = getattr(details, "category", None)
-                explanation = getattr(details, "explanation", None)
-                raise AgentError(f"the model refused ({category}): {explanation}")
-
-            if response.stop_reason != "tool_use":
-                break
-
-            rounds += 1
-            if rounds > self.max_tool_rounds:
-                raise AgentError(f"tool-calling loop exceeded {self.max_tool_rounds} rounds")
-
-            self._messages.append({"role": "assistant", "content": response.content})
-            results: list[dict[str, Any]] = []
-            for block in response.content:
-                if block.type != "tool_use":
-                    continue
-                record, result_block, working = self._apply_tool_call(block, working, cardinality)
-                tool_calls.append(record)
-                results.append(result_block)
-            self._messages.append({"role": "user", "content": results})
-
-        self._messages.append({"role": "assistant", "content": response.content})
+        source = f"session:{self._session_id}/turn:{self._turn}"
+        response, working, tool_calls = run_tool_loop(
+            self.client,
+            system,
+            self._messages,
+            before,
+            cardinality,
+            source=source,
+            max_tool_rounds=self.max_tool_rounds,
+        )
         reply = "".join(block.text for block in response.content if block.type == "text")
 
         changed = working.tree != before.tree
@@ -248,32 +313,3 @@ class MemoryAgent:
             tool_calls=tuple(tool_calls),
             stop_reason=response.stop_reason,
         )
-
-    def _apply_tool_call(
-        self, block: Any, working: MemoryState, cardinality: CardinalityMap
-    ) -> tuple[ToolCallRecord, dict[str, Any], MemoryState]:
-        """Decode and apply one ``tool_use`` block; never raises.
-
-        A ``ToolCallError`` (an invalid fact, an unknown tool name) becomes
-        an ``is_error`` tool result instead of aborting the turn, so the
-        model gets a chance to correct itself on the next round.
-        """
-        source = f"session:{self._session_id}/turn:{self._turn}"
-        try:
-            if block.name == "remember":
-                call = decode_remember(block.input, source=source)
-                working = _merge_remember(working, call, cardinality)
-                content = f"remembered {call.fact.subject} {call.fact.predicate} {call.fact.object}"
-            elif block.name == "forget":
-                call = decode_forget(block.input)
-                working = _merge_forget(working, call)
-                target = call.key[0] + " " + call.key[1]
-                content = f"forgot {target}" + (f"={call.object}" if call.object else " (all values)")
-            else:
-                raise ToolCallError(f"unknown tool {block.name!r}")
-        except ToolCallError as exc:
-            result = {"type": "tool_result", "tool_use_id": block.id, "content": str(exc), "is_error": True}
-            return ToolCallRecord(name=block.name, input=block.input, ok=False), result, working
-
-        result = {"type": "tool_result", "tool_use_id": block.id, "content": content}
-        return ToolCallRecord(name=block.name, input=block.input, ok=True), result, working
