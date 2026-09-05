@@ -19,6 +19,7 @@ from memgit.retrieval.embed import (
     Embedder,
     EmbedderError,
     HashingEmbedder,
+    SemanticEmbedder,
     UnknownEmbedderError,
     default_embedder,
     embed_text,
@@ -116,6 +117,58 @@ class TestEmbedText:
         assert "Python" in text
 
 
+class TestSemanticEmbedder:
+    """Requires the ``semantic`` extra (``fastembed``); skipped otherwise.
+
+    The one property that matters and that ``HashingEmbedder`` structurally
+    cannot have: two paraphrases with almost no shared tokens must land
+    closer together than an unrelated sentence does.
+    """
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def embedder():
+        pytest.importorskip("fastembed")
+        return SemanticEmbedder()
+
+    def test_satisfies_embedder_protocol(self, embedder):
+        assert isinstance(embedder, Embedder)
+
+    def test_dim_matches_the_underlying_model(self, embedder):
+        assert embedder.dim == 384
+
+    def test_vector_is_l2_normalized(self, embedder):
+        vector = embedder.embed("a reasonably long piece of text to embed")
+        norm = math.sqrt(sum(v * v for v in vector))
+        assert norm == pytest.approx(1.0, abs=1e-4)
+
+    def test_deterministic_across_calls(self, embedder):
+        assert embedder.embed("hello world") == embedder.embed("hello world")
+
+    def test_embed_batch_matches_embed_one_by_one(self, embedder):
+        texts = ["one fact", "another fact", "a third fact"]
+        assert embedder.embed_batch(texts) == tuple(embedder.embed(t) for t in texts)
+
+    def test_id_reflects_model_name(self, embedder):
+        assert embedder.id == f"fastembed-v1/{SemanticEmbedder._DEFAULT_MODEL}"
+
+    def test_unknown_model_raises(self):
+        pytest.importorskip("fastembed")
+        with pytest.raises(EmbedderError):
+            SemanticEmbedder(model_name="not-a-real-model/does-not-exist")
+
+    def test_paraphrase_scores_higher_than_unrelated_text(self, embedder):
+        """The property HashingEmbedder cannot have: shared meaning, not shared tokens."""
+        anchor = embedder.embed("the user prefers Python for backend work")
+        paraphrase = embedder.embed("likes coding backend services in Python")
+        unrelated = embedder.embed("the weather today is sunny and warm")
+
+        def cosine(a, b):
+            return sum(x * y for x, y in zip(a, b, strict=True))
+
+        assert cosine(anchor, paraphrase) > cosine(anchor, unrelated)
+
+
 class TestDefaultEmbedder:
     def test_no_config_is_the_hashing_default(self):
         embedder = default_embedder(None)
@@ -134,3 +187,14 @@ class TestDefaultEmbedder:
     def test_malformed_hash_spec_raises(self):
         with pytest.raises(UnknownEmbedderError):
             default_embedder({"embedder": "hash-v1/not-a-number"})
+
+    def test_fastembed_spec_selects_semantic_embedder(self):
+        pytest.importorskip("fastembed")
+        embedder = default_embedder({"embedder": f"fastembed-v1/{SemanticEmbedder._DEFAULT_MODEL}"})
+        assert isinstance(embedder, SemanticEmbedder)
+        assert embedder.dim == 384
+
+    def test_fastembed_spec_with_unknown_model_raises(self):
+        pytest.importorskip("fastembed")
+        with pytest.raises(UnknownEmbedderError):
+            default_embedder({"embedder": "fastembed-v1/not-a-real-model"})

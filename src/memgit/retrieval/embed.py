@@ -10,22 +10,23 @@ invalidates a cached vector (see ``retrieval/index.py``), and it namespaces
 where those vectors are stored on disk. Two embedders that produce
 different vectors must never share an ``id``.
 
-**This module ships exactly one implementation: :class:`HashingEmbedder`.**
-It is lexical, not semantic — deterministic feature hashing over tokens and
-character n-grams, zero dependencies, fully offline. It will not match
-``"favourite editor"`` to ``"preferred text editor"``; it is honest about
-being a bag-of-hashed-features baseline, not a stand-in for a real sentence
-embedding model.
+This module ships two implementations.
 
-A real backend (``sentence-transformers``, or a hosted embedding API) is a
-deliberate non-goal of this slice: the former pulls torch and a multi-GB
-dependency footprint into a project whose only other runtime dependency is
-``typer``; the latter means onboarding a second API key and a second network
-surface — Anthropic has no first-party embeddings endpoint, verified against
-the installed SDK — with a network call sitting in the fact-write path. Both
-plug in behind :class:`Embedder` without touching anything else in
-``memgit.retrieval`` or ``memgit.agent`` if a later slice wants them; Voyage
-AI (Anthropic's own documented recommendation) is the natural drop-in.
+:class:`HashingEmbedder` is lexical, not semantic — deterministic feature
+hashing over tokens and character n-grams, zero dependencies, fully offline.
+It will not match ``"favourite editor"`` to ``"preferred text editor"``; it is
+honest about being a bag-of-hashed-features baseline, not a stand-in for a
+real sentence embedding model.
+
+:class:`SemanticEmbedder` is that real model: a local ONNX sentence-transformer
+run through ``fastembed`` (the ``semantic`` extra), not a hosted API. That
+side-steps both objections a hosted embedding backend used to raise here — a
+second API key and a per-request network call sitting in the fact-write path
+— while still capturing actual meaning, not just shared tokens. It stays
+offline after the model's one-time download, matching this project's
+fully-offline default; ``sentence-transformers`` (the torch-based package) was
+passed over for the same multi-GB dependency-footprint reason ``fastembed``
+(ONNX Runtime, no torch) was not.
 """
 
 from __future__ import annotations
@@ -38,7 +39,15 @@ from typing import Any, Protocol, runtime_checkable
 
 from memgit.core.fact import Fact
 
-__all__ = ["Embedder", "EmbedderError", "HashingEmbedder", "UnknownEmbedderError", "default_embedder", "embed_text"]
+__all__ = [
+    "Embedder",
+    "EmbedderError",
+    "HashingEmbedder",
+    "SemanticEmbedder",
+    "UnknownEmbedderError",
+    "default_embedder",
+    "embed_text",
+]
 
 
 class EmbedderError(Exception):
@@ -157,6 +166,62 @@ class HashingEmbedder:
         return f"HashingEmbedder(dim={self._dim})"
 
 
+class SemanticEmbedder:
+    """A real semantic embedder: a local ONNX sentence-transformer via ``fastembed``.
+
+    Unlike :class:`HashingEmbedder`, this captures meaning rather than shared
+    tokens — ``"prefers Python"`` and ``"likes coding in Python"`` land close
+    together in vector space despite sharing almost no words. The model is
+    downloaded once (cached by ``fastembed``) and every embedding after that
+    runs locally, with no network call and no API key — the ``fastembed``
+    (``semantic``) extra must be installed, which is why the import below is
+    lazy, same as :class:`~memgit.agent.client.AnthropicClient`'s import of
+    ``anthropic``.
+    """
+
+    _PREFIX = "fastembed-v1"
+    _DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+    def __init__(self, model_name: str = _DEFAULT_MODEL) -> None:
+        from fastembed import TextEmbedding
+
+        supported = {m["model"]: m["dim"] for m in TextEmbedding.list_supported_models()}
+        if model_name not in supported:
+            raise EmbedderError(f"unknown fastembed model: {model_name!r}")
+
+        self._model_name = model_name
+        self._dim: int = int(supported[model_name])
+        self._model = TextEmbedding(model_name=model_name)
+
+    @property
+    def id(self) -> str:
+        """See :attr:`Embedder.id` — encodes the scheme and underlying model name."""
+        return f"{self._PREFIX}/{self._model_name}"
+
+    @property
+    def dim(self) -> int:
+        """See :attr:`Embedder.dim`."""
+        return self._dim
+
+    def embed(self, text: str) -> tuple[float, ...]:
+        """See :meth:`Embedder.embed`."""
+        return self.embed_batch([text])[0]
+
+    def embed_batch(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]:
+        """See :meth:`Embedder.embed_batch` — batches through the ONNX model at once."""
+        if not texts:
+            return ()
+        results = []
+        for vector in self._model.embed(list(texts)):
+            norm = math.sqrt(float((vector * vector).sum()))
+            normalized = vector / norm if norm > 0.0 else vector
+            results.append(tuple(float(x) for x in normalized))
+        return tuple(results)
+
+    def __repr__(self) -> str:
+        return f"SemanticEmbedder(model_name={self._model_name!r})"
+
+
 def embed_text(fact: Fact) -> str:
     """The text a fact embeds as — shared by every embedder, every backend.
 
@@ -202,6 +267,13 @@ def default_embedder(config: dict[str, Any] | None = None) -> Embedder:
             raise UnknownEmbedderError(f"invalid hashing embedder spec: {spec!r}") from None
         return HashingEmbedder(dim=dim)
 
+    if prefix == "fastembed-v1":
+        model_name = rest or SemanticEmbedder._DEFAULT_MODEL
+        try:
+            return SemanticEmbedder(model_name=model_name)
+        except EmbedderError as exc:
+            raise UnknownEmbedderError(str(exc)) from exc
+
     raise UnknownEmbedderError(
-        f"unknown embedder {spec!r}: no backend besides 'hash-v1/<dim>' is built in"
+        f"unknown embedder {spec!r}: no backend besides 'hash-v1/<dim>' or 'fastembed-v1/<model>' is built in"
     )
