@@ -36,6 +36,7 @@ complete.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -190,25 +191,57 @@ class RefStore:
             reason: Free-text reflog message. Ignored if no logger is attached.
 
         Raises:
-            ValueError: ``commit`` is not a valid object hash, or ``expect``
-                was given and did not match the ref's current value.
+            ValueError: ``commit`` is not a valid object hash, ``expect`` was
+                given and did not match the ref's current value, or another
+                writer holds this ref's lock right now.
         """
         if not is_object_hash(commit):
             raise ValueError(f"ref target must be a valid object hash, got {commit!r}")
 
         path = self._ref_path(name)
-        # Read the old value whenever a logger needs it for the reflog, or
-        # when the caller asked for compare-and-swap — one read serves both.
-        old = self.read_ref(name) if (self._logger is not None or expect is not _UNSET) else None
-        if expect is not _UNSET and old != expect:
-            raise ValueError(
-                f"ref {name!r} is at {old!r}, expected {expect!r} (concurrent write?)"
-            )
-
         path.parent.mkdir(parents=True, exist_ok=True)
         lock = path.with_name(path.name + ".lock")
-        lock.write_text(commit + "\n", encoding="utf-8")
-        lock.replace(path)
+
+        # O_EXCL makes lock acquisition itself the mutual-exclusion point: a
+        # second writer's open() fails outright instead of racing this one's
+        # write+rename of the *same* lock filename. Reading the old value
+        # only *after* the lock is held (below) is what turns the `expect`
+        # check into an actual compare-and-swap rather than a read a second
+        # writer can invalidate before this writer's rename lands.
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError as exc:
+            raise ValueError(
+                f"ref {name!r} is being written by another writer right now (concurrent write?)"
+            ) from exc
+
+        closed = False
+        try:
+            old = self.read_ref(name) if (self._logger is not None or expect is not _UNSET) else None
+            if expect is not _UNSET and old != expect:
+                raise ValueError(
+                    f"ref {name!r} is at {old!r}, expected {expect!r} (concurrent write?)"
+                )
+            os.write(fd, (commit + "\n").encode("utf-8"))
+            os.close(fd)
+            closed = True
+            lock.replace(path)
+        except ValueError:
+            if not closed:
+                os.close(fd)
+            lock.unlink(missing_ok=True)
+            raise
+        except OSError as exc:
+            # A concurrent reader can transiently hold `path` open in a way
+            # that makes the OS refuse this replace (observed on Windows).
+            # Reported the same way a lost CAS is: the caller's existing
+            # retry-once handling (see mcp/session.py) already knows what to
+            # do with it, and a stuck, un-unlinked `.lock` file here would
+            # otherwise wedge every future write to this ref, forever.
+            if not closed:
+                os.close(fd)
+            lock.unlink(missing_ok=True)
+            raise ValueError(f"ref {name!r} could not be written (concurrent write?): {exc}") from exc
 
         if self._logger is not None:
             self._logger.log(name, old, commit, op=op, message=reason)
