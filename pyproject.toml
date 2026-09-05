@@ -26,6 +26,9 @@ pg = [
     "psycopg[binary]>=3.2",
     "alembic>=1.14",
 ]
+semantic = [
+    "fastembed>=0.8",
+]
 
 [project.scripts]
 memgit = "memgit.cli:app"
