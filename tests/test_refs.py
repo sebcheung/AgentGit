@@ -162,6 +162,15 @@ class TestCompareAndSwap:
         with pytest.raises(ValueError, match="concurrent write"):
             refs.write_ref("refs/heads/main", COMMIT_B, expect=COMMIT_B)
 
+    def test_rejects_while_another_writer_holds_the_lock(self, refs):
+        """A held `.lock` file must fail loudly, not race the holder's write."""
+        refs.write_ref("refs/heads/main", COMMIT_A)
+        lock = refs.memgit_dir / "refs" / "heads" / "main.lock"
+        lock.write_text(COMMIT_B + "\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="another writer"):
+            refs.write_ref("refs/heads/main", COMMIT_B, expect=COMMIT_A)
+        lock.unlink()
+
 
 class TestAtomicity:
     def test_no_lock_file_left_behind_on_success(self, refs):
@@ -174,6 +183,46 @@ class TestAtomicity:
 
     def test_no_lock_file_left_behind_by_detach_head(self, refs):
         refs.detach_head(COMMIT_A)
+        assert list(refs.memgit_dir.rglob("*.lock")) == []
+
+    def test_no_lock_file_left_behind_on_expect_mismatch(self, refs):
+        refs.write_ref("refs/heads/main", COMMIT_A)
+        with pytest.raises(ValueError, match="concurrent write"):
+            refs.write_ref("refs/heads/main", COMMIT_B, expect=COMMIT_B)
+        assert list(refs.memgit_dir.rglob("*.lock")) == []
+
+
+class TestConcurrentWriters:
+    def test_exactly_one_writer_wins_the_rest_raise_valueerror(self, refs):
+        """Twenty threads racing the same CAS: one wins, nineteen lose cleanly.
+
+        Regression test for a Windows-only bug where a losing writer could
+        crash with a raw ``PermissionError`` from the OS instead of the
+        ``ValueError`` every caller (see ``core/staging.py``) already knows
+        how to treat as a retryable conflict.
+        """
+        import threading
+
+        refs.write_ref("refs/heads/main", COMMIT_A)
+        errors: list[BaseException] = []
+        lock = threading.Lock()
+
+        def attempt() -> None:
+            try:
+                refs.write_ref("refs/heads/main", COMMIT_B, expect=COMMIT_A)
+            except Exception as exc:
+                with lock:
+                    errors.append(exc)
+
+        threads = [threading.Thread(target=attempt) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert refs.read_ref("refs/heads/main") == COMMIT_B
+        assert len(errors) == 19
+        assert all(isinstance(exc, ValueError) for exc in errors)
         assert list(refs.memgit_dir.rglob("*.lock")) == []
 
 
